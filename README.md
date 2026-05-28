@@ -42,6 +42,29 @@ You can verify this yourself — search the source: there are no `URLSession`,
 
 ---
 
+## ✅ Verify it's safe (free public tools)
+
+Don't take our word for it — verify it yourself with free tools:
+
+### Scan with VirusTotal (free, 70+ antivirus engines)
+This release has already been scanned — see the public report:
+
+**▶ [VirusTotal report for OSToolbar-v1.0.0.dmg](https://www.virustotal.com/gui/file/349bd87ea9bf9bcb8fdbc9ac7ac5d05f4d545ed8ce7dab71dcdc5749fb87c095)**
+
+You can also re-upload it yourself at [virustotal.com](https://www.virustotal.com/gui/home/upload).
+
+> **About the 1/61 "Wacatac.B!ml" result:** only Microsoft Defender's *machine-learning*
+> engine flags it (note the `!ml` suffix = heuristic guess, not a known-malware signature).
+> Every signature-based engine — and even Microsoft's own non-ML scanner — reports
+> **Undetected**. `Wacatac.B!ml` is one of Defender's most common **false positives** for
+> brand-new, self-signed (non-notarized) apps with no download reputation yet — and an app
+> that *reads the clipboard and captures the screen* trips ML heuristics by design, even
+> though it sends nothing anywhere. The full source is in this repo; build it yourself to
+> confirm. (Such ML false positives can be reported to
+> [Microsoft's submission portal](https://www.microsoft.com/en-us/wdsi/filesubmission) to be cleared.)
+
+---
+
 ## ⬇️ Install (pre-built)
 
 1. Download the latest DMG from `[releases/](releases/)` (or the GitHub Releases page).
@@ -50,7 +73,7 @@ You can verify this yourself — search the source: there are no `URLSession`,
   self-signed certificate, not Apple-notarized, so Gatekeeper asks once).
 4. When you first take a screenshot, macOS asks for **Screen Recording**
   permission — grant it (System Settings → Privacy & Security → Screen Recording),
-   then **quit and reopen** the app once.hasansahinnn
+   then **quit and reopen** the app once.
 
 ---
 
