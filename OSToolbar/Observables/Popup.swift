@@ -108,9 +108,9 @@ class Popup {
   }
 
   func resize(height: CGFloat) {
-    // `height` is just the scrollable history list. The fixed regions (search
-    // header, top pins/paste stack, bottom pins, footer) are added on top.
-    self.height = height + headerHeight + extraTopHeight + extraBottomHeight + footerHeight
+    // `height` is the full scrollable content (paste stack + pins + history +
+    // footer); only the fixed search header is added on top.
+    self.height = height + headerHeight
     AppState.shared.appDelegate?.panel.verticallyResize(to: preferredHeight(for: self.height))
     needsResize = false
   }

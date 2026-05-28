@@ -6,13 +6,17 @@
 ![Platform](https://img.shields.io/badge/macOS-14%2B-black?logo=apple)
 ![Swift](https://img.shields.io/badge/built%20with-Swift-orange?logo=swift&logoColor=white)
 
-A lightweight macOS **menu-bar toolkit** that bundles two everyday tools in one app:
+A lightweight macOS **menu-bar toolkit** that bundles three everyday tools in one
+app — each with its own menu-bar icon:
 
 - **📋 Clipboard history** — automatically keeps your recent copies (last 100), so
 you can search and paste anything you copied earlier.
 - **📸 Screenshot** — a region capture with a built-in annotation
 editor (pen, line, arrow, rectangle, ellipse, highlighter, text), color and size
-controls, then copy, save, or save-as.
+controls, then copy, save, or save-as — plus a one-key full-screen grab.
+- **📝 Notes** — a Notes-style editor with real folders on disk, rich text
+(checklists, tables, links, images), color flags with grouping, search, and
+**reminders/alarms** that pop up at a time you set.
 
 It lives quietly in the menu bar — no Dock icon, no window clutter.
 
@@ -28,6 +32,10 @@ It lives quietly in the menu bar — no Dock icon, no window clutter.
 
 ![Screenshot tool](images/ScreenShot.png)
 
+**Notes with folders, color groups & alarms**
+
+![Notes](images/Notes.png)
+
 ---
 
 ## 🔒 Privacy & safety
@@ -38,10 +46,14 @@ OSToolbar is designed to be safe and self-contained:
 no telemetry, no analytics, no auto-update calls, nothing leaves your machine.
 This is enforced at the OS level: the app is **sandboxed** and ships **without**
 the network entitlement, so macOS itself blocks any outbound connection.
-- **Everything stays in its own container.** Clipboard history is stored locally in
-the app's sandbox container; screenshots are saved only where you choose.
+- **Everything stays on your Mac, as plain files.** Clipboard history lives in the
+app's sandbox container; screenshots are saved where you choose; notes are stored as
+ordinary files/folders in `~/Documents/OSToolbarNotes` (rich text + a small JSON of
+metadata) — no database, so you can read, back up, or sync them yourself.
 - **Passwords are never stored.** Clipboard history ignores password-manager and
 `concealed`/`transient` pasteboard entries, so copied passwords aren't captured.
+- **Reminders are local.** Note alarms are fired by the app itself while it runs —
+no push service, no account, nothing leaves the machine.
 
 You can verify this yourself — search the source: there are no `URLSession`,
 `URLRequest`, or networking calls anywhere in the app.
@@ -85,26 +97,61 @@ You can also re-upload it yourself at [virustotal.com](https://www.virustotal.co
 
 ## 🚀 Usage
 
-### Clipboard history
+OSToolbar adds **three separate menu-bar icons** — one each for Clipboard,
+Screenshot, and Notes — so every tool is one click away.
 
-- Click the menu-bar icon to open the history.
+### ⌨️ Default shortcuts
+
+| Action | Shortcut |
+| --- | --- |
+| Open clipboard history | **⌘⇧C** |
+| Region screenshot (annotate) | **⌘⇧S** |
+| Quick full-screen screenshot | **⌘⇧A** |
+| Open screenshot folder | **⌘⇧F** |
+| Open Notes | **⌘⇧N** |
+
+All shortcuts are configurable in each tool's **Preferences**.
+
+### 📋 Clipboard history
+
+- Click the clipboard icon to open the history (last 100 copies).
 - Type to search; press **Return** to paste the selected item.
+- Pins and the footer scroll together with the list; fast scrolling stays smooth.
 - Configure the open shortcut in **Settings → General**.
 
-### Screenshot
+### 📸 Screenshot
 
-- Press **⌘⇧X** (configurable in **Settings → Screenshot**), or choose
-**Take a Screenshot** from the popup's bottom menu.
-- Drag to select a region. A toolbar appears with:
+- Click the camera icon for a menu: **Screenshot**, **Quick Screenshot**,
+  **Open Image Folder**, **Preferences**.
+- **⌘⇧S** starts a region capture; drag to select. A toolbar appears with:
   - **Tools:** pen, line, arrow, rectangle, ellipse, highlighter, text
   - **Color** and **size** controls, **Undo (⌘Z)**
   - **Copy (⌘C)** — copy to the clipboard (also lands in clipboard history)
   - **Save** — write straight to the default folder
   - **Save As…** — choose where to save
   - **Esc** — cancel
-- **Settings → Screenshot** lets you set the default save folder, the shortcut, and
-the default color/sizes. By default screenshots are saved to
-`~/Pictures/OSToolBar ScreenShot`.
+- **⌘⇧A** instantly captures the whole screen and saves it (with a preview thumbnail).
+- Screenshots are saved to `~/Pictures/OSToolBar ScreenShot` by default; change the
+  folder, shortcuts, and default color/sizes in **Screenshot → Preferences**.
+
+### 📝 Notes
+
+- Click the notes icon (or press **⌘⇧N**) to open the Notes window.
+- **Folders (left):** real directories on disk — create, rename, delete, and
+  *Show in Finder* from the right-click menu.
+- **Notes list (middle):** title, preview, and date. Assign a **color flag**
+  (right-click → Color); notes group into **collapsible color sections**. Search
+  across titles and content from the toolbar.
+- **Editor (right):** rich text with **bold/italic/underline**, font size, text
+  color, **bullet & checklist** (press Return to continue the list, click a circle
+  to tick it), **tables**, **links**, and **images** (hover an image for a preview
+  button; it's capped in size so it never floods the page).
+- **Alarms ⏰:** open the bell menu in the editor to add a reminder for any note —
+  pick a date and time, optionally a label. When it's due, a panel slides in at the
+  top-right; click **Open** to jump to the note. Notes with a pending alarm show a
+  bell in the list, and all upcoming alarms appear under **Alarms** in the sidebar.
+- Notes are saved as plain files in `~/Documents/OSToolbarNotes` (rich text +
+  metadata) — no database. Change the folder or the shortcut in **Notes → Preferences**.
 
 ---
 

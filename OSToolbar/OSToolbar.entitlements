@@ -8,5 +8,9 @@
 	<true/>
 	<key>com.apple.security.assets.pictures.read-write</key>
 	<true/>
+	<key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>
+	<array>
+		<string>/Documents/OSToolbarNotes/</string>
+	</array>
 </dict>
 </plist>

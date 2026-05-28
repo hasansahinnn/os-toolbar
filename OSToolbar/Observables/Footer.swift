@@ -59,19 +59,6 @@ class Footer: ItemsContainer {
         }
       },
       FooterItem(
-        title: "Take a Screenshot",
-        help: "Capture a screenshot (⌘⇧X)"
-      ) {
-        Task { @MainActor in
-          // Hide the popup so it isn't part of the screenshot, then capture.
-          AppState.shared.appDelegate?.panel.orderOut(nil)
-          AppState.shared.popup.reset()
-          DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            ScreenshotController.shared.capture()
-          }
-        }
-      },
-      FooterItem(
         title: "preferences",
         shortcuts: [KeyShortcut(key: .comma)]
       ) {

@@ -52,6 +52,9 @@ extension Defaults.Keys {
   static let screenshotFontSize = Key<Double>("screenshotFontSize", default: 18)
   static let screenshotOpenFolderAfterCapture = Key<Bool>("screenshotOpenFolderAfterCapture", default: false)
 
+  // Notes module
+  static let notesDirectoryBookmark = Key<Data?>("notesDirectoryBookmark", default: nil)
+
   static let searchMode = Key<Search.Mode>("searchMode", default: .exact)
   static let showFooter = Key<Bool>("showFooter", default: true)
   static let showInStatusBar = Key<Bool>("showInStatusBar", default: true)

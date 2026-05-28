@@ -1,5 +1,6 @@
 import Defaults
 import KeyboardShortcuts
+import LaunchAtLogin
 import Settings
 import SwiftHEXColors
 import SwiftUI
@@ -20,6 +21,12 @@ struct ScreenshotSettingsPane: View {
 
   var body: some View {
     Settings.Container(contentWidth: 450) {
+      Settings.Section(bottomDivider: true, label: { Text("Startup") }) {
+        LaunchAtLogin.Toggle {
+          Text("Launch at login")
+        }
+      }
+
       Settings.Section(label: { Text("Region shortcut") }) {
         KeyboardShortcuts.Recorder(for: .screenshot)
           .help("Select a region, annotate, then copy or save.")

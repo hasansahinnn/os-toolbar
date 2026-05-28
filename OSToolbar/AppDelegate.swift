@@ -16,6 +16,124 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     return statusItem
   }()
 
+  // Separate menu-bar icon for the Screenshot feature. Clicking it opens a small
+  // menu (Screenshot / Quick Screenshot / Preferences) rather than a popup.
+  private lazy var screenshotStatusItem: NSStatusItem = {
+    let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    let image = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: "Screenshot")
+    image?.isTemplate = true
+    item.button?.image = image
+    item.menu = makeScreenshotMenu()
+    return item
+  }()
+
+  private func makeScreenshotMenu() -> NSMenu {
+    let menu = NSMenu()
+
+    let region = NSMenuItem(title: "Screenshot", action: #selector(menuCaptureRegion), keyEquivalent: "")
+    region.target = self
+    menu.addItem(region)
+
+    let quick = NSMenuItem(title: "Quick Screenshot", action: #selector(menuCaptureFullScreen), keyEquivalent: "")
+    quick.target = self
+    menu.addItem(quick)
+
+    let openFolder = NSMenuItem(title: "Open Image Folder", action: #selector(menuOpenScreenshotFolder), keyEquivalent: "")
+    openFolder.target = self
+    menu.addItem(openFolder)
+
+    menu.addItem(.separator())
+
+    let prefs = NSMenuItem(title: "Preferences…", action: #selector(menuOpenScreenshotPreferences), keyEquivalent: "")
+    prefs.target = self
+    menu.addItem(prefs)
+
+    let about = NSMenuItem(title: "About", action: #selector(menuOpenAbout), keyEquivalent: "")
+    about.target = self
+    menu.addItem(about)
+
+    let quit = NSMenuItem(title: "Quit", action: #selector(menuQuit), keyEquivalent: "")
+    quit.target = self
+    menu.addItem(quit)
+
+    return menu
+  }
+
+  @objc @MainActor private func menuCaptureRegion() {
+    ScreenshotController.shared.capture()
+  }
+
+  @objc @MainActor private func menuCaptureFullScreen() {
+    ScreenshotController.shared.captureFullScreen()
+  }
+
+  @objc @MainActor private func menuOpenScreenshotFolder() {
+    ScreenshotPreferences.openInFinder()
+  }
+
+  @objc @MainActor private func menuOpenScreenshotPreferences() {
+    AppState.shared.openScreenshotPreferences()
+  }
+
+  @objc @MainActor private func menuOpenAbout() {
+    AppState.shared.openAbout()
+  }
+
+  @objc @MainActor private func menuQuit() {
+    AppState.shared.quit()
+  }
+
+  // Separate menu-bar icon for the Notes feature.
+  private lazy var notesStatusItem: NSStatusItem = {
+    let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    let image = NSImage(systemSymbolName: "note.text", accessibilityDescription: "Notes")
+    image?.isTemplate = true
+    item.button?.image = image
+    item.menu = makeNotesMenu()
+    return item
+  }()
+
+  private func makeNotesMenu() -> NSMenu {
+    let menu = NSMenu()
+
+    let open = NSMenuItem(title: "Open Notes", action: #selector(menuOpenNotes), keyEquivalent: "")
+    open.target = self
+    menu.addItem(open)
+
+    let newNote = NSMenuItem(title: "New Note", action: #selector(menuNewNote), keyEquivalent: "")
+    newNote.target = self
+    menu.addItem(newNote)
+
+    menu.addItem(.separator())
+
+    let prefs = NSMenuItem(title: "Preferences…", action: #selector(menuOpenNotesPreferences), keyEquivalent: "")
+    prefs.target = self
+    menu.addItem(prefs)
+
+    let about = NSMenuItem(title: "About", action: #selector(menuOpenAbout), keyEquivalent: "")
+    about.target = self
+    menu.addItem(about)
+
+    let quit = NSMenuItem(title: "Quit", action: #selector(menuQuit), keyEquivalent: "")
+    quit.target = self
+    menu.addItem(quit)
+
+    return menu
+  }
+
+  @objc @MainActor private func menuOpenNotes() {
+    NotesController.shared.openWindow()
+  }
+
+  @objc @MainActor private func menuNewNote() {
+    NotesController.shared.openWindow()
+    NotesController.shared.newNote()
+  }
+
+  @objc @MainActor private func menuOpenNotesPreferences() {
+    AppState.shared.openNotesPreferences()
+  }
+
   private var isStatusItemDisabled: Bool {
     Defaults[.ignoreEvents] || Defaults[.enabledPasteboardTypes].isEmpty
   }
@@ -81,6 +199,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     migrateUserDefaults()
     disableUnusedGlobalHotkeys()
 
+    // Create the separate Screenshot and Notes menu-bar icons (lazy — reference
+    // to build them).
+    _ = screenshotStatusItem
+    _ = notesStatusItem
+
+    // Notes: make sure the on-disk folder exists and (re)schedule any alarms.
+    NotesStore.ensureRoot()
+    if Defaults[.migrations]["2026-notes-curated-seed"] != true {
+      // Replace the earlier generic demo folders with a tidy, curated set.
+      NotesStore.removeFolders(named: ["Work", "Personal", "Ideas", "Recipes"])
+      NotesStore.seedMockData()
+      Defaults[.migrations]["2026-notes-curated-seed"] = true
+    }
+    NoteAlarmManager.shared.start()
+
     KeyboardShortcuts.onKeyUp(for: .screenshot) {
       ScreenshotController.shared.capture()
     }
@@ -91,6 +224,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     KeyboardShortcuts.onKeyUp(for: .openScreenshotFolder) {
       ScreenshotPreferences.openInFinder()
+    }
+
+    KeyboardShortcuts.onKeyUp(for: .openNotes) {
+      NotesController.shared.openWindow()
     }
 
     panel = FloatingPanel(
@@ -137,6 +274,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         Defaults[.windowSize].height = 800
       }
       Defaults[.migrations]["2026-restore-window-height"] = true
+    }
+
+    // New screenshot shortcut scheme (A/S/F). The previous defaults (X/F/G) were
+    // already persisted from earlier runs, so just changing the code default does
+    // not take effect — force the new shortcuts once.
+    if Defaults[.migrations]["2026-screenshot-shortcuts-asf"] != true {
+      KeyboardShortcuts.setShortcut(.init(.s, modifiers: [.command, .shift]), for: .screenshot)
+      KeyboardShortcuts.setShortcut(.init(.a, modifiers: [.command, .shift]), for: .quickScreenshot)
+      KeyboardShortcuts.setShortcut(.init(.f, modifiers: [.command, .shift]), for: .openScreenshotFolder)
+      Defaults[.migrations]["2026-screenshot-shortcuts-asf"] = true
     }
 
     // The following defaults are not used in this app

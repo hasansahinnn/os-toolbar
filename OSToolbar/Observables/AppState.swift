@@ -34,6 +34,8 @@ class AppState: Sendable {
 
   private let about = About()
   private var settingsWindowController: SettingsWindowController?
+  private var screenshotSettingsWindowController: SettingsWindowController?
+  private var notesSettingsWindowController: SettingsWindowController?
 
   init(history: History, footer: Footer) {
     self.history = history
@@ -132,13 +134,6 @@ class AppState: Sendable {
             AppearanceSettingsPane()
           },
           Settings.Pane(
-            identifier: Settings.PaneIdentifier.screenshot,
-            title: "Screenshot",
-            toolbarIcon: NSImage.cameraViewfinder!
-          ) {
-            ScreenshotSettingsPane()
-          },
-          Settings.Pane(
             identifier: Settings.PaneIdentifier.pins,
             title: NSLocalizedString("Title", tableName: "PinsSettings", comment: ""),
             toolbarIcon: NSImage.pincircle!
@@ -166,6 +161,49 @@ class AppState: Sendable {
     }
     settingsWindowController?.show()
     settingsWindowController?.window?.orderFrontRegardless()
+  }
+
+  // The Screenshot feature has its own, separate preferences window (reached via
+  // the Screenshot menu-bar icon's menu), independent of the clipboard prefs.
+  @MainActor
+  func openScreenshotPreferences() {
+    if screenshotSettingsWindowController == nil {
+      screenshotSettingsWindowController = SettingsWindowController(
+        panes: [
+          Settings.Pane(
+            identifier: Settings.PaneIdentifier.screenshot,
+            title: "Screenshot",
+            toolbarIcon: NSImage.cameraViewfinder!
+          ) {
+            ScreenshotSettingsPane()
+          }
+        ]
+      )
+    }
+    screenshotSettingsWindowController?.show()
+    screenshotSettingsWindowController?.window?.orderFrontRegardless()
+  }
+
+  // The Notes feature has its own, separate preferences window (reached via the
+  // Notes menu-bar icon's menu), independent of the clipboard prefs.
+  @MainActor
+  func openNotesPreferences() {
+    if notesSettingsWindowController == nil {
+      notesSettingsWindowController = SettingsWindowController(
+        panes: [
+          Settings.Pane(
+            identifier: Settings.PaneIdentifier.notes,
+            title: "Notes",
+            toolbarIcon: NSImage(systemSymbolName: "note.text", accessibilityDescription: "Notes")
+              ?? NSImage.gearshape!
+          ) {
+            NotesSettingsPane()
+          }
+        ]
+      )
+    }
+    notesSettingsWindowController?.show()
+    notesSettingsWindowController?.window?.orderFrontRegardless()
   }
 
   func quit() {

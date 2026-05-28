@@ -45,19 +45,6 @@ struct HistoryListView: View {
       : (Popup.verticalSeparatorPadding - 1)
   }
 
-  private func topSeparator() -> some View {
-    Divider()
-      .padding(.horizontal, Popup.horizontalSeparatorPadding)
-      .padding(.top, Popup.verticalSeparatorPadding)
-  }
-
-  @ViewBuilder
-  private func bottomSeparator() -> some View {
-    Divider()
-      .padding(.horizontal, Popup.horizontalSeparatorPadding)
-      .padding(.bottom, Popup.verticalSeparatorPadding)
-  }
-
   @ViewBuilder
   private func separator() -> some View {
     Divider()
@@ -68,44 +55,44 @@ struct HistoryListView: View {
   var body: some View {
     let topPinsVisible = pinTo == .top && pinsVisible
     let bottomPinsVisible = pinTo == .bottom && pinsVisible
-    let topSeparatorVisible = topPinsVisible || pasteStackVisible
-    let bottomSeparatorVisible = bottomPinsVisible
-    let scrollTopPadding = topSeparatorVisible ? Popup.verticalSeparatorPadding : topPadding
-    let scrollBottomPadding = bottomSeparatorVisible ? Popup.verticalSeparatorPadding : bottomPadding
 
-    // Pinned items, the paste stack and the top separator are FIXED above the
-    // scroll view (not scrolled). Their height is reported via readHeight so the
-    // window can size itself. Keeping only the history list inside the ScrollView
-    // is what keeps the LazyVStack lazy — nesting it together with these would
-    // realize every row and freeze the UI during fast hover-scrolling.
-    VStack(spacing: 0) {
-      if let stack = appState.history.pasteStack,
-         !stack.items.isEmpty {
-        PasteStackView(stack: stack)
-
-        if topPinsVisible {
-          separator()
-        }
-      }
-
-      if topPinsVisible {
-        PinsView(items: pinnedItems)
-      }
-
-      if topSeparatorVisible {
-        topSeparator()
-      }
-    }
-    .padding(.top, topSeparatorVisible ? topPadding : 0)
-    .readHeight(appState, into: \.popup.extraTopHeight)
-
+    // Everything except the search field lives in ONE scroll view: paste stack,
+    // pinned items, history, and the footer (Preferences/Quit/…). They all scroll
+    // together — pins are NOT fixed at the top; scrolling the list moves them out
+    // of view with it, and the footer is reached by scrolling to the bottom.
+    //
+    // This is safe (no freeze) because the scroll-time hover-selection storm is
+    // suppressed in HoverSelectionModifier via NavigationManager.isScrolling, not
+    // by keeping the list as the sole lazy scroll content.
     ScrollView {
       ScrollViewReader { proxy in
-        MultipleSelectionListView(items: unpinnedItems) { previous, item, next, index in
-          HistoryItemView(item: item, previous: previous, next: next, index: index)
+        VStack(alignment: .leading, spacing: 0) {
+          if let stack = appState.history.pasteStack,
+             !stack.items.isEmpty {
+            PasteStackView(stack: stack)
+            separator()
+          }
+
+          if topPinsVisible {
+            PinsView(items: pinnedItems)
+            separator()
+          }
+
+          MultipleSelectionListView(items: unpinnedItems) { previous, item, next, index in
+            HistoryItemView(item: item, previous: previous, next: next, index: index)
+          }
+
+          if bottomPinsVisible {
+            separator()
+            PinsView(items: pinnedItems)
+          }
+
+          if showFooter {
+            FooterView(footer: appState.footer)
+          }
         }
-        .padding(.top, scrollTopPadding)
-        .padding(.bottom, scrollBottomPadding)
+        .padding(.top, topPadding)
+        .padding(.bottom, bottomPadding)
         .task(id: appState.navigator.scrollTarget) {
           guard appState.navigator.scrollTarget != nil else { return }
 
@@ -128,7 +115,8 @@ struct HistoryListView: View {
             appState.preview.cancelAutoOpen()
           }
         }
-        // Calculate the total height of the (lazy) history list inside the scroll.
+        // Measure the full scrollable content (pins + history + footer) so the
+        // window can grow to fit it, up to the screen height.
         .background {
           GeometryReader { geo in
             Color.clear
@@ -144,21 +132,6 @@ struct HistoryListView: View {
         }
       }
       .contentMargins(.leading, 10, for: .scrollIndicators)
-      .contentMargins(.top, scrollTopPadding, for: .scrollIndicators)
-      .contentMargins(.bottom, scrollBottomPadding, for: .scrollIndicators)
     }
-
-    // Bottom-pinned items and the bottom separator are FIXED below the scroll.
-    VStack(spacing: 0) {
-      if bottomSeparatorVisible {
-        bottomSeparator()
-      }
-
-      if bottomPinsVisible {
-        PinsView(items: pinnedItems)
-      }
-    }
-    .padding(.bottom, bottomSeparatorVisible ? bottomPadding : 0)
-    .readHeight(appState, into: \.popup.extraBottomHeight)
   }
 }
