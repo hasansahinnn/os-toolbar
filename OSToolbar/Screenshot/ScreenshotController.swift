@@ -46,10 +46,16 @@ enum ScreenshotPreferences {
     }
   }
 
+  // Open the screenshot folder itself (show its contents), not its parent.
   static func openInFinder() {
     let dir = saveDirectory
     ensureExists(dir)
-    NSWorkspace.shared.activateFileViewerSelecting([dir])
+    NSWorkspace.shared.open(dir)
+  }
+
+  // Open the containing folder with a specific file selected.
+  static func revealInFinder(_ url: URL) {
+    NSWorkspace.shared.activateFileViewerSelecting([url])
   }
 
   // Writes PNG data to the default directory. Returns the saved file URL.
@@ -94,7 +100,7 @@ enum ScreenshotPreferences {
   static func fileName() -> String {
     let formatter = DateFormatter()
     formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
-    return "OSToolbar Screenshot \(formatter.string(from: Date())).png"
+    return "Screenshot \(formatter.string(from: Date())).png"
   }
 
   private static func ensureExists(_ dir: URL) {
@@ -125,6 +131,7 @@ final class ScreenshotController {
   static let shared = ScreenshotController()
 
   private var overlayWindow: ScreenshotOverlayWindow?
+  private var thumbnailWindow: ScreenshotThumbnailWindow?
   private var isCapturing = false
 
   func capture() {
@@ -153,6 +160,57 @@ final class ScreenshotController {
         NSLog("OSToolbar: screenshot capture failed: \(error)")
       }
     }
+  }
+
+  // Quick full-screen capture: grabs the whole display the cursor is on and saves
+  // it straight to the default folder (no region select, no editor).
+  func captureFullScreen() {
+    if !CGPreflightScreenCaptureAccess() {
+      CGRequestScreenCaptureAccess()
+      presentPermissionAlert()
+      return
+    }
+
+    let mouse = NSEvent.mouseLocation
+    guard let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
+      ?? NSScreen.main,
+      let displayID = screen.displayID else { return }
+    let scale = screen.backingScaleFactor
+
+    Task { @MainActor in
+      do {
+        let image = try await Self.captureDisplay(displayID: displayID, scale: scale)
+        guard let png = Self.pngData(from: image) else { return }
+        let savedURL = ScreenshotPreferences.saveToDefaultDirectory(png)
+
+        // Small bottom-right preview: click it to reveal the file in Finder.
+        let nsImage = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+        self.showThumbnail(nsImage, fileURL: savedURL, screen: screen)
+
+        // Optionally also open the folder right away.
+        if Defaults[.screenshotOpenFolderAfterCapture] {
+          ScreenshotPreferences.openInFinder()
+        }
+      } catch {
+        NSLog("OSToolbar: quick screenshot failed: \(error)")
+      }
+    }
+  }
+
+  private func showThumbnail(_ image: NSImage, fileURL: URL?, screen: NSScreen) {
+    thumbnailWindow?.dismiss()
+    let window = ScreenshotThumbnailWindow(image: image, screen: screen) {
+      if let fileURL { ScreenshotPreferences.revealInFinder(fileURL) }
+    } onFinish: { [weak self] in
+      self?.thumbnailWindow = nil
+    }
+    thumbnailWindow = window
+    window.present()
+  }
+
+  private static func pngData(from cgImage: CGImage) -> Data? {
+    let rep = NSBitmapImageRep(cgImage: cgImage)
+    return rep.representation(using: .png, properties: [:])
   }
 
   private func presentOverlay(cgImage: CGImage, screen: NSScreen, scale: CGFloat) {
@@ -205,4 +263,82 @@ extension NSScreen {
   var displayID: CGDirectDisplayID? {
     deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
   }
+}
+
+// MARK: - Bottom-right capture thumbnail
+
+@MainActor
+final class ScreenshotThumbnailWindow: NSWindow {
+  private let onClick: () -> Void
+  private let onFinish: () -> Void
+  private var dismissTask: Task<Void, Never>?
+
+  init(image: NSImage, screen: NSScreen, onClick: @escaping () -> Void, onFinish: @escaping () -> Void) {
+    self.onClick = onClick
+    self.onFinish = onFinish
+
+    let maxW: CGFloat = 220, maxH: CGFloat = 150
+    let aspect = image.size.width / max(image.size.height, 1)
+    var w = maxW, h = maxW / aspect
+    if h > maxH { h = maxH; w = maxH * aspect }
+    let margin: CGFloat = 20
+    let frame = NSRect(
+      x: screen.visibleFrame.maxX - w - margin,
+      y: screen.visibleFrame.minY + margin,
+      width: w, height: h
+    )
+
+    super.init(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
+    isOpaque = false
+    backgroundColor = .clear
+    level = .statusBar
+    hasShadow = true
+    isReleasedWhenClosed = false
+    animationBehavior = .none
+    collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+
+    let view = ClickableImageView(image: image) { [weak self] in
+      self?.dismiss()
+      self?.onClick()
+    }
+    view.imageScaling = .scaleProportionallyUpOrDown
+    view.wantsLayer = true
+    view.layer?.cornerRadius = 8
+    view.layer?.borderWidth = 2
+    view.layer?.borderColor = NSColor.white.withAlphaComponent(0.85).cgColor
+    view.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.25).cgColor
+    view.layer?.masksToBounds = true
+    contentView = view
+  }
+
+  func present() {
+    orderFrontRegardless()
+    dismissTask = Task { @MainActor in
+      try? await Task.sleep(for: .seconds(5))
+      guard !Task.isCancelled else { return }
+      self.dismiss()
+    }
+  }
+
+  func dismiss() {
+    dismissTask?.cancel()
+    dismissTask = nil
+    orderOut(nil)
+    let finish = onFinish
+    DispatchQueue.main.async { finish() }
+  }
+
+  override var canBecomeKey: Bool { false }
+}
+
+@MainActor
+private final class ClickableImageView: NSImageView {
+  private let onClick: () -> Void
+  init(image: NSImage, onClick: @escaping () -> Void) {
+    self.onClick = onClick
+    super.init(frame: .zero)
+    self.image = image
+  }
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+  override func mouseDown(with event: NSEvent) { onClick() }
 }

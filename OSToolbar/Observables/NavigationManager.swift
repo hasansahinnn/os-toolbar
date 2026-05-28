@@ -19,6 +19,26 @@ class NavigationManager { // swiftlint:disable:this type_body_length
   }
 
   var scrollTarget: UUID?
+
+  // True while the list is actively being scrolled. Hover-selection is suppressed
+  // during this window: as rows scroll under a stationary cursor, onHover would
+  // otherwise fire selectWithoutScrolling on every row, and each selection change
+  // forces SwiftUI to re-place the entire LazyVStack (O(n)). At fast scroll speeds
+  // that is a continuous storm of full re-layouts and freezes the UI. Resets
+  // shortly after the last scroll event, so moving the mouse still selects.
+  var isScrolling = false
+  private var scrollIdleTask: Task<Void, Never>?
+
+  func noteScroll() {
+    if !isScrolling { isScrolling = true }
+    scrollIdleTask?.cancel()
+    scrollIdleTask = Task { @MainActor in
+      try? await Task.sleep(for: .milliseconds(120))
+      guard !Task.isCancelled else { return }
+      isScrolling = false
+    }
+  }
+
   var leadSelection: UUID? {
     if let item = leadHistoryItem {
       return item.id
@@ -39,6 +59,8 @@ class NavigationManager { // swiftlint:disable:this type_body_length
       } else {
         preview.cancelAutoOpen()
       }
+      // Debounced — only rebuilds the preview once scrolling settles.
+      preview.schedulePreview()
     }
   }
 

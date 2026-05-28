@@ -74,7 +74,8 @@ class FloatingPanel<Content: View>: NSPanel, NSWindowDelegate {
   func open(height: CGFloat, at popupPosition: PopupPosition = Defaults[.popupPosition]) {
     let size = Defaults[.windowSize]
     setContentSize(NSSize(width: min(frame.width, size.width), height: min(height, size.height)))
-    setFrameOrigin(popupPosition.origin(size: frame.size, statusBarButton: statusBarButton))
+    let origin = popupPosition.origin(size: frame.size, statusBarButton: statusBarButton)
+    setFrame(clampedToScreen(NSRect(origin: origin, size: frame.size)), display: false)
     orderFrontRegardless()
     makeKey()
     isPresented = true
@@ -90,12 +91,30 @@ class FloatingPanel<Content: View>: NSPanel, NSWindowDelegate {
     var newSize = frame.size
     newSize.height = newHeight
     var newOrigin = frame.origin
+    // Keep the top edge fixed (grow downward)…
     newOrigin.y += (frame.height - newSize.height)
+    // …but never let the window run off the bottom of the screen; clamp so the
+    // footer (Settings/Quit/etc.) stays visible — i.e. grow upward when near the edge.
+    let target = clampedToScreen(NSRect(origin: newOrigin, size: newSize))
 
     NSAnimationContext.runAnimationGroup { (context) in
       context.duration = 0.2
-      animator().setFrame(NSRect(origin: newOrigin, size: newSize), display: true)
+      animator().setFrame(target, display: true)
     }
+  }
+
+  // Keep a window rect fully within the visible area of whichever screen it sits on.
+  private func clampedToScreen(_ rect: NSRect) -> NSRect {
+    let target = NSScreen.screens.first { $0.frame.intersects(rect) } ?? screen ?? NSScreen.main
+    guard let visible = target?.visibleFrame else { return rect }
+    var r = rect
+    r.size.height = min(r.size.height, visible.height)
+    r.size.width = min(r.size.width, visible.width)
+    if r.maxX > visible.maxX { r.origin.x = visible.maxX - r.width }
+    if r.minX < visible.minX { r.origin.x = visible.minX }
+    if r.maxY > visible.maxY { r.origin.y = visible.maxY - r.height }
+    if r.minY < visible.minY { r.origin.y = visible.minY }
+    return r
   }
 
   func determinePreviewPlacement() {

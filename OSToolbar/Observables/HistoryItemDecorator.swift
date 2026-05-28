@@ -1,8 +1,13 @@
 import AppKit.NSWorkspace
 import Defaults
 import Foundation
+import ImageIO
 import Observation
 import Sauce
+
+// Lets us hand a CGImage back from a detached (background) task to the main actor.
+// CGImage is effectively immutable/thread-safe; the box just satisfies Sendable.
+private struct SendableCGImage: @unchecked Sendable { let image: CGImage }
 
 @Observable
 class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
@@ -10,7 +15,9 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
     return lhs.id == rhs.id
   }
 
-  static var previewImageSize: NSSize { NSScreen.forPopup?.visibleFrame.size ?? NSSize(width: 2048, height: 1536) }
+  // The preview panel is small, so generating a full-screen-resolution image was
+  // wasteful and slow (caused hangs when moving between image items). Cap it.
+  static var previewImageSize: NSSize { NSSize(width: 1100, height: 900) }
   static var thumbnailImageSize: NSSize { NSSize(width: 340, height: Defaults[.imageMaxHeight]) }
 
   let id = UUID()
@@ -39,10 +46,11 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
     return url.deletingPathExtension().lastPathComponent
   }
 
-  var hasImage: Bool { item.image != nil }
+  // Cheap check — don't decode the image just to know it's an image.
+  var hasImage: Bool { item.imageData != nil }
 
-  var previewImageGenerationTask: Task<(), Error>?
-  var thumbnailImageGenerationTask: Task<(), Error>?
+  var previewImageGenerationTask: Task<Void, Never>?
+  var thumbnailImageGenerationTask: Task<Void, Never>?
   var previewImage: NSImage?
   var thumbnailImage: NSImage?
   var applicationImage: ApplicationImage
@@ -74,33 +82,35 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
 
   @MainActor
   func ensureThumbnailImage() {
-    guard item.image != nil else {
+    guard thumbnailImage == nil, thumbnailImageGenerationTask == nil,
+          let data = item.imageData else {
       return
     }
-    guard thumbnailImage == nil else {
-      return
-    }
-    guard thumbnailImageGenerationTask == nil else {
-      return
-    }
-    thumbnailImageGenerationTask = Task { [weak self] in
-      self?.generateThumbnailImage()
+    let target = Self.thumbnailImageSize
+    let maxPixel = max(target.width, target.height) * 2
+    thumbnailImageGenerationTask = Task.detached(priority: .utility) { [weak self] in
+      guard let cgImage = Self.downsample(data, maxPixelSize: maxPixel) else { return }
+      let boxed = SendableCGImage(image: cgImage)
+      await MainActor.run {
+        self?.thumbnailImage = NSImage(cgImage: boxed.image, size: Self.fittedSize(boxed.image, within: target))
+      }
     }
   }
 
   @MainActor
   func ensurePreviewImage() {
-    guard item.image != nil else {
+    guard previewImage == nil, previewImageGenerationTask == nil,
+          let data = item.imageData else {
       return
     }
-    guard previewImage == nil else {
-      return
-    }
-    guard previewImageGenerationTask == nil else {
-      return
-    }
-    previewImageGenerationTask = Task { [weak self] in
-      self?.generatePreviewImage()
+    let target = Self.previewImageSize
+    let maxPixel = max(target.width, target.height)
+    previewImageGenerationTask = Task.detached(priority: .userInitiated) { [weak self] in
+      guard let cgImage = Self.downsample(data, maxPixelSize: maxPixel) else { return }
+      let boxed = SendableCGImage(image: cgImage)
+      await MainActor.run {
+        self?.previewImage = NSImage(cgImage: boxed.image, size: Self.fittedSize(boxed.image, within: target))
+      }
     }
   }
 
@@ -110,7 +120,7 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
       return image
     }
     ensurePreviewImage()
-    _ = await previewImageGenerationTask?.result
+    _ = await previewImageGenerationTask?.value
     return previewImage
   }
 
@@ -124,26 +134,33 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
     previewImage = nil
   }
 
-  @MainActor
-  private func generateThumbnailImage() {
-    guard let image = item.image else {
-      return
-    }
-    thumbnailImage = image.resized(to: HistoryItemDecorator.thumbnailImageSize)
+  // Decode the image data directly at the target size via ImageIO — this never
+  // fully decodes huge originals, so it's fast and light, and safe off the main
+  // thread. Runs on a background task; the result is handed back via SendableCGImage.
+  nonisolated private static func downsample(_ data: Data, maxPixelSize: CGFloat) -> CGImage? {
+    guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+    let options: [CFString: Any] = [
+      kCGImageSourceCreateThumbnailFromImageAlways: true,
+      kCGImageSourceCreateThumbnailWithTransform: true,
+      kCGImageSourceShouldCacheImmediately: true,
+      kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+    ]
+    return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
   }
 
-  @MainActor
-  private func generatePreviewImage() {
-    guard let image = item.image else {
-      return
-    }
-    previewImage = image.resized(to: HistoryItemDecorator.previewImageSize)
+  // Point size for an image that aspect-fits within `box` (never upscaled), so a
+  // wide image stays short in the list rather than ballooning in height.
+  nonisolated private static func fittedSize(_ image: CGImage, within box: NSSize) -> NSSize {
+    let pixelWidth = CGFloat(image.width)
+    let pixelHeight = CGFloat(image.height)
+    let scale = min(box.width / pixelWidth, box.height / pixelHeight, 1)
+    return NSSize(width: pixelWidth * scale, height: pixelHeight * scale)
   }
 
   @MainActor
   func sizeImages() {
-    generatePreviewImage()
-    generateThumbnailImage()
+    ensureThumbnailImage()
+    ensurePreviewImage()
   }
 
   func highlight(_ query: String, _ ranges: [Range<String.Index>]) {

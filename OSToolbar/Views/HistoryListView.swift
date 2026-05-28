@@ -73,6 +73,11 @@ struct HistoryListView: View {
     let scrollTopPadding = topSeparatorVisible ? Popup.verticalSeparatorPadding : topPadding
     let scrollBottomPadding = bottomSeparatorVisible ? Popup.verticalSeparatorPadding : bottomPadding
 
+    // Pinned items, the paste stack and the top separator are FIXED above the
+    // scroll view (not scrolled). Their height is reported via readHeight so the
+    // window can size itself. Keeping only the history list inside the ScrollView
+    // is what keeps the LazyVStack lazy — nesting it together with these would
+    // realize every row and freeze the UI during fast hover-scrolling.
     VStack(spacing: 0) {
       if let stack = appState.history.pasteStack,
          !stack.items.isEmpty {
@@ -117,16 +122,13 @@ struct HistoryListView: View {
             searchFocused = true
             appState.navigator.isKeyboardNavigating = true
             appState.navigator.select(item: appState.history.unpinnedItems.first ?? appState.history.pinnedItems.first)
-            appState.preview.enableAutoOpen()
-            appState.preview.resetAutoOpenSuppression()
-            appState.preview.startAutoOpen()
           } else {
             modifierFlags.flags = []
             appState.navigator.isKeyboardNavigating = true
             appState.preview.cancelAutoOpen()
           }
         }
-        // Calculate the total height inside a scroll view.
+        // Calculate the total height of the (lazy) history list inside the scroll.
         .background {
           GeometryReader { geo in
             Color.clear
@@ -146,6 +148,7 @@ struct HistoryListView: View {
       .contentMargins(.bottom, scrollBottomPadding, for: .scrollIndicators)
     }
 
+    // Bottom-pinned items and the bottom separator are FIXED below the scroll.
     VStack(spacing: 0) {
       if bottomSeparatorVisible {
         bottomSeparator()

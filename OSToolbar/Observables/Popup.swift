@@ -61,7 +61,7 @@ class Popup {
     guard eventsMonitor == nil else { return }
 
     self.eventsMonitor = NSEvent.addLocalMonitorForEvents(
-      matching: [.flagsChanged, .keyDown],
+      matching: [.flagsChanged, .keyDown, .scrollWheel],
       handler: handleEvent
     )
   }
@@ -100,11 +100,16 @@ class Popup {
     minimumHeight = max(headerHeight + Self.verticalPadding, minimumHeight)
 
     height = max(height, minimumHeight)
+    // Maccy behavior: grow to the content height up to the stored window height.
+    // It opens from the cursor downward; FloatingPanel's clamp shifts it up only
+    // when it would run off the bottom of the screen.
     height = min(height, Defaults[.windowSize].height)
     return height
   }
 
   func resize(height: CGFloat) {
+    // `height` is just the scrollable history list. The fixed regions (search
+    // header, top pins/paste stack, bottom pins, footer) are added on top.
     self.height = height + headerHeight + extraTopHeight + extraBottomHeight + footerHeight
     AppState.shared.appDelegate?.panel.verticallyResize(to: preferredHeight(for: self.height))
     needsResize = false
@@ -128,6 +133,11 @@ class Popup {
       return handleKeyDown(event)
     case .flagsChanged:
       return handleFlagsChanged(event)
+    case .scrollWheel:
+      // Mark the list as scrolling so hover-selection is suppressed during the
+      // scroll (prevents the O(n) re-layout storm). Pass the event through.
+      AppState.shared.navigator.noteScroll()
+      return event
     default:
       return event
     }

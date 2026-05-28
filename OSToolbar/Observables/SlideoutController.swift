@@ -108,6 +108,50 @@ class SlideoutController {
   private var autoOpenTask: Task<Void, Never>?
   private var autoOpenSuppressed = false
   private var autoOpenEnabled = true
+  private var closeForHoverTask: Task<Void, Never>?
+
+  // The item shown in the preview, updated only after the selection settles.
+  // SlideoutContentView observes THESE (not leadHistoryItem), so its body
+  // re-renders only when scrolling stops — not on every row passed under the
+  // mouse during a fast scroll, which used to saturate the main thread and
+  // freeze the UI while the preview was open.
+  var previewItem: HistoryItemDecorator?
+  var previewPasteStackSelected = false
+  private var previewDebounceTask: Task<Void, Never>?
+
+  // Called from NavigationManager whenever the lead selection changes. Cheap:
+  // just cancels and reschedules a debounce timer. The actual (observable)
+  // preview state is only written once the selection has been stable for a beat.
+  func schedulePreview() {
+    previewDebounceTask?.cancel()
+    guard state != .closed else {
+      previewItem = nil
+      previewPasteStackSelected = false
+      return
+    }
+    previewDebounceTask = Task { @MainActor in
+      try? await Task.sleep(for: .milliseconds(250))
+      guard !Task.isCancelled, state != .closed else { return }
+      let navigator = AppState.shared.navigator
+      previewItem = navigator.leadHistoryItem
+      previewPasteStackSelected = navigator.pasteStackSelected
+    }
+  }
+
+  // Snapshot the current selection into the observable preview state right away,
+  // with no debounce — used when the preview is opened so it shows immediately.
+  private func syncPreviewNow() {
+    previewDebounceTask?.cancel()
+    let navigator = AppState.shared.navigator
+    previewItem = navigator.leadHistoryItem
+    previewPasteStackSelected = navigator.pasteStackSelected
+  }
+
+  private func clearPreview() {
+    previewDebounceTask?.cancel()
+    previewItem = nil
+    previewPasteStackSelected = false
+  }
 
   init(onContentResize: @escaping (CGFloat) -> Void, onSlideoutResize: @escaping (CGFloat) -> Void) {
     self.onContentResize = onContentResize
@@ -159,6 +203,15 @@ class SlideoutController {
     }
 
     cancelAutoOpen()
+
+    // Update the observable preview state up front: show the current selection
+    // immediately when opening, clear it when closing.
+    if state.isOpen {
+      clearPreview()
+    } else {
+      syncPreviewNow()
+    }
+
     withAnimation(.easeInOut(duration: Self.animationDuration), completionCriteria: .removed) {
       if let window = nswindow {
         togglePreviewStateWithAnimation(windowFrame: window.frame)
@@ -221,18 +274,33 @@ class SlideoutController {
   }
 
   func startAutoOpen() {
+    // Auto-open on hover/selection is disabled: it opened the preview for every
+    // hovered row (slow/janky with image items). The preview now opens only on
+    // explicit intent — hovering the small zone on the right edge of a row
+    // (openForHover) or pressing the preview shortcut (togglePreview).
     cancelAutoOpen()
+  }
 
-    guard autoOpenEnabled else { return }
-    guard !autoOpenSuppressed else { return }
+  // Open the preview for the currently selected item, from the right-edge arrow
+  // hover zone. Cancels any pending close so moving between adjacent arrows just
+  // updates the content instead of flickering closed.
+  func openForHover() {
+    closeForHoverTask?.cancel()
+    closeForHoverTask = nil
     guard !state.isOpen else { return }
+    togglePreview(trigger: .manual)
+  }
 
-    autoOpenTask = Task { @MainActor in
-      try? await Task.sleep(for: .milliseconds(Defaults[.previewDelay]))
+  // The mouse left an arrow zone — close the preview shortly, unless another
+  // arrow is hovered in the meantime (which cancels this). This keeps the heavy
+  // image preview open only while the pointer is actually on an arrow.
+  func scheduleCloseForHover() {
+    closeForHoverTask?.cancel()
+    closeForHoverTask = Task { @MainActor in
+      try? await Task.sleep(for: .milliseconds(180))
       guard !Task.isCancelled else { return }
-
-      if !state.isOpen {
-        togglePreview(trigger: .autoOpen)
+      if state.isOpen {
+        togglePreview(trigger: .manual)
       }
     }
   }

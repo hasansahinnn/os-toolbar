@@ -85,6 +85,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
       ScreenshotController.shared.capture()
     }
 
+    KeyboardShortcuts.onKeyUp(for: .quickScreenshot) {
+      ScreenshotController.shared.captureFullScreen()
+    }
+
+    KeyboardShortcuts.onKeyUp(for: .openScreenshotFolder) {
+      ScreenshotPreferences.openInFinder()
+    }
+
     panel = FloatingPanel(
       contentRect: NSRect(origin: .zero, size: Defaults[.windowSize]),
       identifier: Bundle.main.bundleIdentifier ?? "com.ostoolbar.app",
@@ -120,6 +128,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
       UserDefaults.standard.removeObject(forKey: "hideTitle")
 
       Defaults[.migrations]["2024-07-01-version-2"] = true
+    }
+
+    // Undo the earlier compact-window experiment: restore the taller, adaptive
+    // window height (matches the original/Maccy behavior) for anyone who got 480.
+    if Defaults[.migrations]["2026-restore-window-height"] != true {
+      if Defaults[.windowSize].height < 800 {
+        Defaults[.windowSize].height = 800
+      }
+      Defaults[.migrations]["2026-restore-window-height"] = true
     }
 
     // The following defaults are not used in this app

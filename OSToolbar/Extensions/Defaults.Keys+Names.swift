@@ -50,6 +50,7 @@ extension Defaults.Keys {
   static let screenshotColorHex = Key<String>("screenshotColorHex", default: "#FF3B30")
   static let screenshotLineWidth = Key<Double>("screenshotLineWidth", default: 4)
   static let screenshotFontSize = Key<Double>("screenshotFontSize", default: 18)
+  static let screenshotOpenFolderAfterCapture = Key<Bool>("screenshotOpenFolderAfterCapture", default: false)
 
   static let searchMode = Key<Search.Mode>("searchMode", default: .exact)
   static let showFooter = Key<Bool>("showFooter", default: true)

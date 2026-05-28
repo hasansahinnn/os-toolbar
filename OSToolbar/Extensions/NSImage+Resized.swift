@@ -1,27 +1,49 @@
 import AppKit.NSImage
 
-// Based on https://stackoverflow.com/questions/73062803/resizing-nsimage-keeping-aspect-ratio-reducing-the-image-size-while-trying-to-sc.
 extension NSImage {
+  // Resize to fit `newSize` (preserving aspect, never upscaling) and RASTERIZE the
+  // result to a concrete bitmap via Core Graphics.
+  //
+  // The previous implementation returned an NSImage with a drawing handler, which
+  // re-drew the full-resolution source on every render (with high interpolation).
+  // With image-heavy histories that caused severe hangs while scrolling/navigating.
+  // A CGImage-backed bitmap costs one downscale here, then renders cheaply.
   func resized(to newSize: NSSize) -> NSImage {
     let ratioX = newSize.width / size.width
     let ratioY = newSize.height / size.height
-    let ratio = ratioX < ratioY ? ratioX : ratioY
-    let newHeight = size.height * ratio
-    let newWidth = size.width * ratio
-    let newSize = NSSize(width: newWidth, height: newHeight)
+    let ratio = min(ratioX, ratioY)
 
     // Don't attempt to size up.
-    if newSize.height >= size.height {
+    if ratio >= 1 {
       return self
     }
 
-    return NSImage(size: newSize, flipped: false) { destRect in
-      if let context = NSGraphicsContext.current {
-        context.imageInterpolation = .high
-        self.draw(in: destRect, from: NSRect.zero, operation: .copy, fraction: 1)
-      }
+    let targetWidth = size.width * ratio
+    let targetHeight = size.height * ratio
+    let pixelWidth = max(1, Int(targetWidth.rounded()))
+    let pixelHeight = max(1, Int(targetHeight.rounded()))
 
-      return true
+    guard let cgImage = cgImage(forProposedRect: nil, context: nil, hints: nil),
+          let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+          let context = CGContext(
+            data: nil,
+            width: pixelWidth,
+            height: pixelHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+          ) else {
+      return self
     }
+
+    context.interpolationQuality = .high
+    context.draw(cgImage, in: CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight))
+
+    guard let resizedCGImage = context.makeImage() else {
+      return self
+    }
+
+    return NSImage(cgImage: resizedCGImage, size: NSSize(width: targetWidth, height: targetHeight))
   }
 }

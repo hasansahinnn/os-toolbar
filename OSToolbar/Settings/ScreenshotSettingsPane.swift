@@ -20,12 +20,25 @@ struct ScreenshotSettingsPane: View {
 
   var body: some View {
     Settings.Container(contentWidth: 450) {
-      Settings.Section(label: { Text("Shortcut") }) {
+      Settings.Section(label: { Text("Region shortcut") }) {
         KeyboardShortcuts.Recorder(for: .screenshot)
-          .help("Global shortcut to start a screenshot.")
+          .help("Select a region, annotate, then copy or save.")
+      }
+
+      Settings.Section(label: { Text("Quick full screen") }) {
+        KeyboardShortcuts.Recorder(for: .quickScreenshot)
+          .help("Instantly capture the whole screen and save it to the folder below.")
+      }
+
+      Settings.Section(label: { Text("Open folder") }) {
+        KeyboardShortcuts.Recorder(for: .openScreenshotFolder)
+          .help("Open the screenshot folder in Finder.")
       }
 
       Settings.Section(bottomDivider: true, label: { Text("") }) {
+        Defaults.Toggle(key: .screenshotOpenFolderAfterCapture) {
+          Text("Open folder after a quick screenshot")
+        }
         Button {
           takeScreenshot()
         } label: {
