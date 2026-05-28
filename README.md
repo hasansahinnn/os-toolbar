@@ -1,5 +1,11 @@
 # OSToolbar
 
+[![Release](https://img.shields.io/github/v/release/hasansahinnn/os-toolbar?sort=semver)](https://github.com/hasansahinnn/os-toolbar/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/hasansahinnn/os-toolbar/total)](https://github.com/hasansahinnn/os-toolbar/releases)
+[![License](https://img.shields.io/github/license/hasansahinnn/os-toolbar)](LICENSE)
+![Platform](https://img.shields.io/badge/macOS-14%2B-black?logo=apple)
+![Swift](https://img.shields.io/badge/built%20with-Swift-orange?logo=swift&logoColor=white)
+
 A lightweight macOS **menu-bar toolkit** that bundles two everyday tools in one app:
 
 - **📋 Clipboard history** — automatically keeps your recent copies (last 100), so
@@ -67,7 +73,7 @@ You can also re-upload it yourself at [virustotal.com](https://www.virustotal.co
 
 ## ⬇️ Install (pre-built)
 
-1. Download the latest DMG from `[releases/](releases/)` (or the GitHub Releases page).
+1. Download the latest DMG (or ZIP) from the [**Releases page**](https://github.com/hasansahinnn/os-toolbar/releases/latest).
 2. Open the DMG and drag **OSToolbar** onto **Applications**.
 3. First launch: **right-click the app → Open** (the build is signed with a
   self-signed certificate, not Apple-notarized, so Gatekeeper asks once).

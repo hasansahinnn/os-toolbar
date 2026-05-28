@@ -13,5 +13,7 @@ Package.resolved
 # macOS
 .DS_Store
 
-# Keep release DMGs (tracked intentionally)
-!releases/
+# Built artifacts — distributed via GitHub Releases, not committed
+releases/
+*.dmg
+*.zip
