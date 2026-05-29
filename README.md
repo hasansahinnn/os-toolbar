@@ -67,9 +67,9 @@ Don't take our word for it — verify it yourself with free tools:
 ### Scan with VirusTotal (free, 70+ antivirus engines)
 This release has already been scanned — **0 / 61 security vendors flagged it** (clean):
 
-**▶ [VirusTotal report for OSToolbar-v1.0.0.dmg](https://www.virustotal.com/gui/file/f8dd5dc9501f3636ff87ac591a749434a069af8703b66bcb48ad9459729530a7)**
+**▶ [VirusTotal report for OSToolbar-v1.0.0.dmg](https://www.virustotal.com/gui/file/bc34559b438a88b9988c175f28ef7e42f4f8a533757db4e1b36c1a4942674e06)**
 
-`SHA-256: f8dd5dc9501f3636ff87ac591a749434a069af8703b66bcb48ad9459729530a7`
+`SHA-256: bc34559b438a88b9988c175f28ef7e42f4f8a533757db4e1b36c1a4942674e06`
 
 You can also re-upload it yourself at [virustotal.com](https://www.virustotal.com/gui/home/upload)
 and compare the hash — it should match exactly.
@@ -130,19 +130,28 @@ All shortcuts are configurable in each tool's **Preferences**.
 ### 📝 Notes
 
 - Click the notes icon (or press **⌘⇧N**) to open the Notes window.
-- **Folders (left):** real directories on disk — create, rename, delete, and
-  *Show in Finder* from the right-click menu.
-- **Notes list (middle):** title, preview, and date. Assign a **color flag**
-  (right-click → Color); notes group into **collapsible color sections**. Search
-  across titles and content from the toolbar.
-- **Editor (right):** rich text with **bold/italic/underline**, font size, text
-  color, **bullet & checklist** (press Return to continue the list, click a circle
-  to tick it), **tables**, **links**, and **images** (hover an image for a preview
-  button; it's capped in size so it never floods the page).
+- **Folders (left):** real directories on disk. Create with the **＋** button, then
+  type the name right away. **Single-click** a folder to open it; **click the
+  selected name again** to rename (or right-click → Rename / Show in Finder / Delete).
+- **Search all notes:** the **🔍** button next to ＋ opens a search box that looks
+  through **every note's title and content** across all folders. Results are grouped
+  **by folder**, so you can see which folder each match lives in; click a result to
+  jump straight to it.
+- **Notes list (middle):** title, a one-line preview, and the edited date. Create a
+  note with the **✎** button (the name is editable immediately). Single-click to open,
+  click the selected title again to rename. Assign a **color flag** (right-click →
+  Color); notes group into **collapsible color sections**. A per-folder search box is
+  also in the toolbar.
+- **Editor (right):** rich text with **bold/italic/underline**, font size, an inline
+  **color picker**, **bullet & checklist** (press Return to continue the list, click a
+  circle to tick it), **tables**, **links**, and **images** (hover an image for a
+  preview button — it's capped in size so it never floods the page). The title bar
+  shows the **Created** and **Edited** times.
 - **Alarms ⏰:** open the bell menu in the editor to add a reminder for any note —
-  pick a date and time, optionally a label. When it's due, a panel slides in at the
-  top-right; click **Open** to jump to the note. Notes with a pending alarm show a
-  bell in the list, and all upcoming alarms appear under **Alarms** in the sidebar.
+  pick a date (calendar) and time, optionally a label. When it's due, a panel slides
+  in at the top-right; click **Open** to jump to the note. Notes with a pending alarm
+  show a bell in the list, and all upcoming alarms are listed under **Alarms** in the
+  sidebar (with a *Show more* toggle).
 - Notes are saved as plain files in `~/Documents/OSToolbarNotes` (rich text +
   metadata) — no database. Change the folder or the shortcut in **Notes → Preferences**.
 

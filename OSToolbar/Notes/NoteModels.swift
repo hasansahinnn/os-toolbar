@@ -66,6 +66,9 @@ struct NoteMeta: Codable {
   var created: Date
   var modified: Date
   var alarms: [NoteAlarm]
+  // Cached one-line body preview for the list (so it's consistent and doesn't
+  // require loading the full note content). Defaults empty for older files.
+  var preview: String
 
   init(
     id: UUID = UUID(),
@@ -73,7 +76,8 @@ struct NoteMeta: Codable {
     color: NoteColor = .none,
     created: Date = Date(),
     modified: Date = Date(),
-    alarms: [NoteAlarm] = []
+    alarms: [NoteAlarm] = [],
+    preview: String = ""
   ) {
     self.id = id
     self.title = title
@@ -81,6 +85,22 @@ struct NoteMeta: Codable {
     self.created = created
     self.modified = modified
     self.alarms = alarms
+    self.preview = preview
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id, title, color, created, modified, alarms, preview
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    id = try c.decode(UUID.self, forKey: .id)
+    title = try c.decode(String.self, forKey: .title)
+    color = try c.decode(NoteColor.self, forKey: .color)
+    created = try c.decode(Date.self, forKey: .created)
+    modified = try c.decode(Date.self, forKey: .modified)
+    alarms = try c.decodeIfPresent([NoteAlarm].self, forKey: .alarms) ?? []
+    preview = try c.decodeIfPresent(String.self, forKey: .preview) ?? ""
   }
 }
 
@@ -96,6 +116,8 @@ final class Note: Identifiable {
   var created: Date
   var modified: Date
   var alarms: [NoteAlarm]
+  // One-line body preview shown in the list (kept in sync with content on save).
+  var preview: String
 
   // Loaded lazily from content.rtfd when the note is opened in the editor.
   var attributed: NSAttributedString?
@@ -113,6 +135,7 @@ final class Note: Identifiable {
     self.created = meta.created
     self.modified = meta.modified
     self.alarms = meta.alarms
+    self.preview = meta.preview
   }
 
   var meta: NoteMeta {
@@ -122,18 +145,14 @@ final class Note: Identifiable {
       color: color,
       created: created,
       modified: modified,
-      alarms: alarms
+      alarms: alarms,
+      preview: preview
     )
   }
 
-  // First non-empty line after the title, for the list preview.
+  // Stable list preview (cached in meta, not recomputed from lazily-loaded content).
   var snippet: String {
-    let text = attributed?.string ?? ""
-    let lines = text
-      .components(separatedBy: .newlines)
-      .map { $0.trimmingCharacters(in: .whitespaces) }
-      .filter { !$0.isEmpty }
-    return lines.dropFirst(0).first ?? "No additional text"
+    preview.isEmpty ? "No additional text" : preview
   }
 }
 

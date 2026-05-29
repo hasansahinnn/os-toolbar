@@ -119,7 +119,20 @@ enum NotesStore {
             let meta = try? JSONDecoder.notes.decode(NoteMeta.self, from: data) else {
         return nil
       }
-      return Note(directoryURL: url, meta: meta)
+      let note = Note(directoryURL: url, meta: meta)
+      // Older notes have no cached preview — compute it once from content and
+      // write it back, so the list shows a consistent snippet without loading
+      // content lazily (which made previews appear only after opening a note).
+      if note.preview.isEmpty,
+         let attributed = try? NSAttributedString(
+           url: note.contentURL,
+           options: [.documentType: NSAttributedString.DocumentType.rtfd],
+           documentAttributes: nil
+         ) {
+        note.preview = makePreview(attributed, title: note.title)
+        try? writeMeta(note.meta, to: metaURL)
+      }
+      return note
     }
     .sorted { $0.modified > $1.modified }
   }
@@ -167,8 +180,20 @@ enum NotesStore {
     let scoped = startScopedAccess(for: root)
     defer { if scoped { root.stopAccessingSecurityScopedResource() } }
     note.modified = Date()
+    note.preview = makePreview(attributed, title: note.title)
     try? writeContent(attributed, to: note.contentURL)
     saveMeta(note)
+  }
+
+  // First non-empty body line that isn't just the title, capped for the list.
+  private static func makePreview(_ attributed: NSAttributedString, title: String) -> String {
+    let titleTrim = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    let lines = attributed.string
+      .components(separatedBy: .newlines)
+      .map { $0.trimmingCharacters(in: .whitespaces) }
+      .filter { !$0.isEmpty }
+    let line = lines.first { $0 != titleTrim } ?? lines.first ?? ""
+    return String(line.prefix(120))
   }
 
   static func saveMeta(_ note: Note) {

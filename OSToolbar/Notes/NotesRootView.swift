@@ -17,6 +17,18 @@ struct NotesRootView: View {
   @State private var tableRows = 2
   @State private var tableCols = 2
 
+  // Inline rename state (one item at a time).
+  @State private var editingFolderID: NoteFolder.ID?
+  @State private var editingNoteID: Note.ID?
+  @State private var editingText = ""
+  @FocusState private var renameFocused: Bool
+  @State private var alarmsExpanded = false
+
+  // Global search-all-notes state.
+  @State private var searchActive = false
+  @State private var searchText = ""
+  @FocusState private var searchFieldFocused: Bool
+
   private var folderSelection: Binding<NoteFolder.ID?> {
     Binding(
       get: { controller.selectedFolderID },
@@ -34,7 +46,7 @@ struct NotesRootView: View {
   var body: some View {
     NavigationSplitView {
       sidebar
-        .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 320)
+        .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 320)
     } content: {
       notesList
         .navigationSplitViewColumnWidth(min: 240, ideal: 290, max: 420)
@@ -43,15 +55,118 @@ struct NotesRootView: View {
     }
     .frame(minWidth: 900, minHeight: 560)
     .onAppear { controller.loadFolders() }
+    .onChange(of: renameFocused) { _, focused in
+      if !focused { commitActiveRename() }
+    }
+    .onChange(of: controller.justCreatedFolderID) { _, id in
+      guard let id, let folder = controller.folders.first(where: { $0.id == id }) else { return }
+      controller.justCreatedFolderID = nil
+      beginFolderRename(folder)
+    }
+    .onChange(of: controller.justCreatedNoteID) { _, id in
+      guard let id, let note = controller.notes.first(where: { $0.id == id }) else { return }
+      controller.justCreatedNoteID = nil
+      beginNoteRename(note)
+    }
   }
 
-  // MARK: - Sidebar (folders)
+  // MARK: - Sidebar (folders, then alarms)
 
   private var sidebar: some View {
+    VStack(spacing: 0) {
+      if searchActive {
+        searchBar
+        Divider()
+      }
+      if searchActive && !searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+        searchResults
+      } else {
+        foldersAndAlarms
+      }
+    }
+    .toolbar {
+      ToolbarItemGroup {
+        Button { controller.newFolder() } label: {
+          Image(systemName: "folder.badge.plus")
+        }
+        .help("New Folder")
+        Button { toggleSearch() } label: {
+          Image(systemName: "magnifyingglass")
+        }
+        .help("Search all notes")
+      }
+    }
+  }
+
+  private var searchBar: some View {
+    HStack(spacing: 6) {
+      Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+      TextField("Search in all notes", text: $searchText)
+        .textFieldStyle(.plain)
+        .focused($searchFieldFocused)
+        .onChange(of: searchText) { _, value in controller.setGlobalSearch(value) }
+        .onSubmit { controller.setGlobalSearch(searchText) }
+      if !searchText.isEmpty {
+        Button {
+          searchText = ""
+          controller.setGlobalSearch("")
+          searchFieldFocused = true
+        } label: {
+          Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+      }
+    }
+    .padding(8)
+    .onChange(of: searchFieldFocused) { _, focused in
+      if !focused && searchText.isEmpty { searchActive = false }
+    }
+  }
+
+  private var searchResults: some View {
+    List {
+      ForEach(controller.globalSearchResults) { section in
+        Section {
+          ForEach(section.notes) { note in
+            Button {
+              controller.openGlobalSearchResult(note)
+            } label: {
+              VStack(alignment: .leading, spacing: 2) {
+                Text(note.title.isEmpty ? "Untitled" : note.title)
+                  .font(.callout).lineLimit(1)
+                Text(note.snippet).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+              }
+              .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+          }
+        } header: {
+          Label(section.folderName, systemImage: "folder")
+        }
+      }
+    }
+    .listStyle(.sidebar)
+    .overlay {
+      if controller.globalSearchResults.isEmpty {
+        if controller.globalSearchPending {
+          ProgressView()
+        } else {
+          ContentUnavailableView("No Results", systemImage: "magnifyingglass")
+        }
+      }
+    }
+  }
+
+  private var foldersAndAlarms: some View {
     List(selection: folderSelection) {
+      Section("Folders") {
+        ForEach(controller.folders) { folder in folderRow(folder) }
+      }
+
       if !controller.activeAlarms.isEmpty {
         Section("Alarms") {
-          ForEach(controller.activeAlarms) { row in
+          let shown = alarmsExpanded ? controller.activeAlarms : Array(controller.activeAlarms.prefix(3))
+          ForEach(shown) { row in
             Button {
               controller.revealNote(atPath: row.notePath)
             } label: {
@@ -64,6 +179,9 @@ struct NotesRootView: View {
                   Text(DateFormatter.noteAlarm.string(from: row.date))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                  if !row.label.isEmpty {
+                    Text(row.label).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+                  }
                 }
                 Spacer()
               }
@@ -71,34 +189,70 @@ struct NotesRootView: View {
             }
             .buttonStyle(.plain)
           }
-        }
-      }
-
-      Section("Folders") {
-        ForEach(controller.folders) { folder in
-          Label(folder.name, systemImage: "folder")
-            .tag(folder.id)
-            .contextMenu {
-              Button("New Note") {
-                controller.selectFolder(folder)
-                controller.newNote()
+          if controller.activeAlarms.count > 3 {
+            Button {
+              alarmsExpanded.toggle()
+            } label: {
+              HStack(spacing: 4) {
+                Image(systemName: alarmsExpanded ? "chevron.up" : "chevron.down")
+                Text(alarmsExpanded ? "Show less" : "Show \(controller.activeAlarms.count - 3) more")
+                Spacer()
               }
-              Button("Rename") { promptRenameFolder(folder) }
-              Button("Show in Finder") { reveal(folder.url) }
-              Divider()
-              Button("Delete", role: .destructive) { confirmDeleteFolder(folder) }
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+          }
         }
       }
     }
     .listStyle(.sidebar)
-    .toolbar {
-      ToolbarItem {
-        Button { controller.newFolder() } label: {
-          Image(systemName: "folder.badge.plus")
-        }
-        .help("New Folder")
+  }
+
+  private func toggleSearch() {
+    searchActive.toggle()
+    if searchActive {
+      DispatchQueue.main.async { searchFieldFocused = true }
+    } else {
+      searchText = ""
+      controller.setGlobalSearch("")
+    }
+  }
+
+  private func folderRow(_ folder: NoteFolder) -> some View {
+    HStack(spacing: 6) {
+      Image(systemName: "folder")
+      if editingFolderID == folder.id {
+        TextField("Folder", text: $editingText)
+          .textFieldStyle(.plain)
+          .focused($renameFocused)
+          .onSubmit { commitActiveRename() }
+      } else {
+        Text(folder.name)
       }
+      Spacer(minLength: 0)
+    }
+    .contentShape(Rectangle())
+    .tag(folder.id)
+    .onTapGesture {
+      guard editingFolderID != folder.id else { return }
+      // First click opens the folder; clicking it again (already selected) renames.
+      if controller.selectedFolderID == folder.id {
+        beginFolderRename(folder)
+      } else {
+        controller.selectFolder(folder)
+      }
+    }
+    .contextMenu {
+      Button("New Note") {
+        controller.selectFolder(folder)
+        controller.newNote()
+      }
+      Button("Rename") { beginFolderRename(folder) }
+      Button("Show in Finder") { reveal(folder.url) }
+      Divider()
+      Button("Delete", role: .destructive) { confirmDeleteFolder(folder) }
     }
   }
 
@@ -169,9 +323,17 @@ struct NotesRootView: View {
         if note.color != .none {
           Circle().fill(note.color.color).frame(width: 9, height: 9)
         }
-        Text(note.title.isEmpty ? "Untitled" : note.title)
-          .font(.headline)
-          .lineLimit(1)
+        if editingNoteID == note.id {
+          TextField("Title", text: $editingText)
+            .textFieldStyle(.plain)
+            .font(.headline)
+            .focused($renameFocused)
+            .onSubmit { commitActiveRename() }
+        } else {
+          Text(note.title.isEmpty ? "Untitled" : note.title)
+            .font(.headline)
+            .lineLimit(1)
+        }
         Spacer()
         if note.hasPendingAlarm {
           Image(systemName: "bell.fill")
@@ -183,12 +345,23 @@ struct NotesRootView: View {
         .font(.subheadline)
         .foregroundStyle(.secondary)
         .lineLimit(1)
-      Text(DateFormatter.noteAlarm.string(from: note.modified))
+      Text("Edited " + DateFormatter.noteAlarm.string(from: note.modified))
         .font(.caption)
         .foregroundStyle(.tertiary)
     }
     .padding(.vertical, 2)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .contentShape(Rectangle())
     .tag(note.id)
+    .onTapGesture {
+      guard editingNoteID != note.id else { return }
+      // First click opens the note; clicking it again (already selected) renames.
+      if controller.selectedNoteID == note.id {
+        beginNoteRename(note)
+      } else {
+        controller.selectNote(note)
+      }
+    }
     .contextMenu {
       Menu("Color") {
         ForEach(NoteColor.allCases) { color in
@@ -199,6 +372,7 @@ struct NotesRootView: View {
           }
         }
       }
+      Button("Rename") { beginNoteRename(note) }
       Button("Show in Finder") { reveal(note.directoryURL) }
       Divider()
       Button("Delete", role: .destructive) { confirmDeleteNote(note) }
@@ -211,6 +385,15 @@ struct NotesRootView: View {
   private var editor: some View {
     if let note = controller.selectedNote {
       VStack(spacing: 0) {
+        HStack {
+          Spacer()
+          Text("Created " + DateFormatter.noteAlarm.string(from: note.created)
+               + "   ·   Edited " + DateFormatter.noteAlarm.string(from: note.modified))
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+          Spacer()
+        }
+        .padding(.top, 6)
         editorToolbar(note)
         Divider()
         RichTextEditor(noteID: note.id, text: controller.editorText, bridge: bridge)
@@ -259,7 +442,7 @@ struct NotesRootView: View {
         toolButton("textformat.size.larger") {
           fontSize = min(72, fontSize + 1); bridge.setFontSize(fontSize)
         }
-        textColorMenu
+        InlineColorPicker { bridge.setTextColor($0) }
       }
       Divider().frame(height: 16)
       Group {
@@ -284,19 +467,6 @@ struct NotesRootView: View {
     .buttonStyle(.borderless)
   }
 
-  private var textColorMenu: some View {
-    Menu {
-      ForEach(NoteColor.allCases.filter { $0 != .none }) { color in
-        Button(color.displayName) { bridge.setTextColor(NSColor(color.color)) }
-      }
-      Button("Default") { bridge.setTextColor(.textColor) }
-    } label: {
-      Image(systemName: "paintpalette")
-    }
-    .menuStyle(.borderlessButton)
-    .frame(width: 40)
-  }
-
   private func flagMenu(_ note: Note) -> some View {
     Menu {
       ForEach(NoteColor.allCases) { color in
@@ -317,22 +487,40 @@ struct NotesRootView: View {
     .fixedSize()
   }
 
+  // MARK: - Rename helpers
+
+  private func beginFolderRename(_ folder: NoteFolder) {
+    editingNoteID = nil
+    editingText = folder.name
+    editingFolderID = folder.id
+    focusRenameSoon()
+  }
+
+  private func beginNoteRename(_ note: Note) {
+    editingFolderID = nil
+    editingText = note.title
+    editingNoteID = note.id
+    focusRenameSoon()
+  }
+
+  private func focusRenameSoon() {
+    DispatchQueue.main.async { renameFocused = true }
+  }
+
+  private func commitActiveRename() {
+    if let id = editingFolderID, let folder = controller.folders.first(where: { $0.id == id }) {
+      controller.renameFolder(folder, to: editingText)
+      editingFolderID = nil
+    } else if let id = editingNoteID, let note = controller.notes.first(where: { $0.id == id }) {
+      controller.renameNote(note, to: editingText)
+      editingNoteID = nil
+    }
+  }
+
   // MARK: - Actions
 
   private func reveal(_ url: URL) {
     NSWorkspace.shared.activateFileViewerSelecting([url])
-  }
-
-  private func promptRenameFolder(_ folder: NoteFolder) {
-    let alert = NSAlert()
-    alert.messageText = "Rename Folder"
-    let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-    field.stringValue = folder.name
-    alert.accessoryView = field
-    alert.addButton(withTitle: "Rename")
-    alert.addButton(withTitle: "Cancel")
-    guard alert.runModal() == .alertFirstButtonReturn else { return }
-    controller.renameFolder(folder, to: field.stringValue)
   }
 
   private func confirmDeleteFolder(_ folder: NoteFolder) {
@@ -361,6 +549,46 @@ struct NotesRootView: View {
       guard alert.runModal() == .alertFirstButtonReturn else { return }
     }
     controller.deleteNote(note)
+  }
+}
+
+// Minimal inline text-color picker: a small palette popover anchored right at the
+// toolbar button (instead of the large system Colors panel).
+struct InlineColorPicker: View {
+  let onPick: (NSColor) -> Void
+  @State private var show = false
+
+  private let swatches: [NSColor] = [
+    .systemRed, .systemOrange, .systemYellow, .systemGreen, .systemMint, .systemTeal,
+    .systemBlue, .systemIndigo, .systemPurple, .systemPink, .systemBrown, .systemGray,
+    .black, .white
+  ]
+
+  var body: some View {
+    Button { show.toggle() } label: {
+      Image(systemName: "paintpalette")
+        .frame(width: 22, height: 20)
+    }
+    .buttonStyle(.borderless)
+    .help("Text color")
+    .popover(isPresented: $show, arrowEdge: .bottom) {
+      VStack(spacing: 10) {
+        LazyVGrid(columns: Array(repeating: GridItem(.fixed(22), spacing: 8), count: 7), spacing: 8) {
+          ForEach(Array(swatches.enumerated()), id: \.offset) { _, color in
+            Circle()
+              .fill(Color(nsColor: color))
+              .frame(width: 20, height: 20)
+              .overlay(Circle().stroke(Color.secondary.opacity(0.4), lineWidth: 0.5))
+              .onTapGesture { onPick(color); show = false }
+          }
+        }
+        Divider()
+        Button("Default") { onPick(.textColor); show = false }
+          .font(.caption)
+      }
+      .padding(12)
+      .frame(width: 232)
+    }
   }
 }
 
@@ -448,7 +676,6 @@ struct AlarmButton: View {
       alarmPopover
         .frame(width: 320)
         .padding(14)
-        .environment(\.locale, Locale(identifier: "en_GB"))
     }
   }
 

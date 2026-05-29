@@ -25,11 +25,19 @@ final class NotesController {
   // Color group ids that are currently collapsed in the list.
   var collapsedColors: Set<String> = []
 
+  // Set when a folder/note is freshly created so the list can immediately put its
+  // name into inline-edit mode (like Finder/Notes).
+  var justCreatedFolderID: NoteFolder.ID?
+  var justCreatedNoteID: Note.ID?
+
   // The attributed content currently shown in the editor (bound to the note).
   var editorText = NSAttributedString(string: "")
 
   private var saveTask: Task<Void, Never>?
   private var loadingNoteIntoEditor = false
+  // The note with unsaved edits, if any. Used so we only re-save (and bump the
+  // modified date / reorder the list) when there were real changes.
+  private var dirtyNoteID: Note.ID?
 
   private var windowController: NotesWindowController?
 
@@ -131,7 +139,9 @@ final class NotesController {
           id: color.rawValue,
           title: color.displayName,
           color: color,
-          notes: grouped[color]?.sorted { $0.modified > $1.modified } ?? []
+          // Preserve the load-time order (already sorted by modified). We do NOT
+          // re-sort live, so selecting/editing a note never reshuffles the list.
+          notes: grouped[color] ?? []
         )
       }
   }
@@ -165,11 +175,16 @@ final class NotesController {
     guard let folder = NotesStore.createFolder(named: "New Folder") else { return }
     loadFolders()
     selectFolder(folders.first { $0.url == folder.url })
+    justCreatedFolderID = folder.id
   }
 
   func renameFolder(_ folder: NoteFolder, to name: String) {
-    NotesStore.renameFolder(folder, to: name)
+    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, trimmed != folder.name else { return }
+    NotesStore.renameFolder(folder, to: trimmed)
+    let newID = folder.url
     loadFolders()
+    selectFolder(folders.first { $0.id == newID })
   }
 
   func deleteFolder(_ folder: NoteFolder) {
@@ -191,6 +206,16 @@ final class NotesController {
     guard let note = NotesStore.createNote(in: folder) else { return }
     notes.insert(note, at: 0)
     selectNote(note)
+    justCreatedNoteID = note.id
+  }
+
+  // Explicit rename (from double-clicking the title in the list). Independent of
+  // the note body — the title no longer auto-derives from the first line.
+  func renameNote(_ note: Note, to name: String) {
+    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, trimmed != note.title else { return }
+    NotesStore.renameNote(note, to: trimmed)
+    refreshActiveAlarms()
   }
 
   func deleteNote(_ note: Note) {
@@ -204,37 +229,35 @@ final class NotesController {
 
   // MARK: - Editing
 
-  // Called by the editor whenever its content changes. Derives the title from
-  // the first line (macOS Notes style), saves on a short debounce.
+  // Called by the editor whenever its content changes. Saves on a short debounce.
   func editorContentChanged(_ attributed: NSAttributedString) {
     guard !loadingNoteIntoEditor, let note = selectedNote else { return }
     note.attributed = attributed
     editorText = attributed
+    dirtyNoteID = note.id
     saveTask?.cancel()
     saveTask = Task { @MainActor in
       try? await Task.sleep(for: .milliseconds(500))
       guard !Task.isCancelled else { return }
       persist(note, attributed: attributed)
+      dirtyNoteID = nil
     }
   }
 
   private func persist(_ note: Note, attributed: NSAttributedString) {
-    let firstLine = attributed.string
-      .components(separatedBy: .newlines)
-      .first { !$0.trimmingCharacters(in: .whitespaces).isEmpty }?
-      .trimmingCharacters(in: .whitespaces) ?? "Untitled"
-    if firstLine != note.title {
-      NotesStore.renameNote(note, to: firstLine)
-    }
     NotesStore.saveContent(note, attributed: attributed)
   }
 
+  // Only saves if there were actual edits — otherwise selecting a note would
+  // bump its modified date and reshuffle the list.
   func flushPendingSave() {
     saveTask?.cancel()
     saveTask = nil
-    if let note = selectedNote, let attributed = note.attributed {
-      persist(note, attributed: attributed)
-    }
+    guard let id = dirtyNoteID,
+          let note = notes.first(where: { $0.id == id }),
+          let attributed = note.attributed else { return }
+    persist(note, attributed: attributed)
+    dirtyNoteID = nil
   }
 
   // MARK: - Color flags
@@ -247,7 +270,12 @@ final class NotesController {
   // MARK: - Alarms
 
   func addAlarm(_ date: Date, title: String, to note: Note) {
-    let alarm = NoteAlarm(date: date, title: title)
+    // Zero the seconds so an alarm set "for 21:24" fires at 21:24:00, not part-way
+    // into the next minute (which felt ~1 minute late).
+    var components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+    components.second = 0
+    let fireDate = Calendar.current.date(from: components) ?? date
+    let alarm = NoteAlarm(date: fireDate, title: title)
     note.alarms.append(alarm)
     NotesStore.saveMeta(note)
     NoteAlarmManager.shared.schedule(alarm, for: note)
@@ -267,6 +295,50 @@ final class NotesController {
     note.alarms.removeAll { !$0.isPending }
     NotesStore.saveMeta(note)
     refreshActiveAlarms()
+  }
+
+  // MARK: - Global search (across all folders)
+
+  var globalSearchResults: [GlobalSearchSection] = []
+  var globalSearchPending = false
+  private var globalSearchTask: Task<Void, Never>?
+
+  // Debounced ~3s, then searches every note's title and content across all
+  // folders, grouping matches by their folder.
+  func setGlobalSearch(_ query: String) {
+    globalSearchTask?.cancel()
+    let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+      globalSearchPending = false
+      globalSearchResults = []
+      return
+    }
+    globalSearchPending = true
+    globalSearchTask = Task { @MainActor in
+      try? await Task.sleep(for: .seconds(3))
+      guard !Task.isCancelled else { return }
+      performGlobalSearch(trimmed)
+    }
+  }
+
+  private func performGlobalSearch(_ query: String) {
+    let needle = query.lowercased()
+    var sections: [GlobalSearchSection] = []
+    for folder in NotesStore.listFolders() {
+      let matches = NotesStore.listNotes(in: folder).filter { note in
+        if note.title.lowercased().contains(needle) { return true }
+        return NotesStore.loadContent(note).string.lowercased().contains(needle)
+      }
+      if !matches.isEmpty {
+        sections.append(GlobalSearchSection(id: folder.url.path, folderName: folder.name, notes: matches))
+      }
+    }
+    globalSearchResults = sections
+    globalSearchPending = false
+  }
+
+  func openGlobalSearchResult(_ note: Note) {
+    revealNote(atPath: note.directoryURL.path)
   }
 
   // MARK: - Grouping
@@ -295,4 +367,10 @@ struct ActiveAlarmRow: Identifiable {
   let notePath: String
   let date: Date
   let label: String
+}
+
+struct GlobalSearchSection: Identifiable {
+  let id: String
+  let folderName: String
+  let notes: [Note]
 }
