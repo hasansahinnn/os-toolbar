@@ -67,9 +67,9 @@ Don't take our word for it — verify it yourself with free tools:
 ### Scan with VirusTotal (free, 70+ antivirus engines)
 This release has already been scanned — **0 / 61 security vendors flagged it** (clean):
 
-**▶ [VirusTotal report for OSToolbar-v1.0.0.dmg](https://www.virustotal.com/gui/file/bc34559b438a88b9988c175f28ef7e42f4f8a533757db4e1b36c1a4942674e06)**
+**▶ [VirusTotal report for OSToolbar-v1.0.0.dmg](https://www.virustotal.com/gui/file/cddae352172b3521be31ea0105722c3d908888c00fe3bbe68fcccf31aa16ddb0)**
 
-`SHA-256: bc34559b438a88b9988c175f28ef7e42f4f8a533757db4e1b36c1a4942674e06`
+`SHA-256: cddae352172b3521be31ea0105722c3d908888c00fe3bbe68fcccf31aa16ddb0`
 
 You can also re-upload it yourself at [virustotal.com](https://www.virustotal.com/gui/home/upload)
 and compare the hash — it should match exactly.

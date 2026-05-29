@@ -55,6 +55,12 @@ extension Defaults.Keys {
   // Notes module
   static let notesDirectoryBookmark = Key<Data?>("notesDirectoryBookmark", default: nil)
 
+  // Per-feature on/off switches. When a feature is disabled its shortcuts and
+  // menu actions become no-ops (the menu-bar icon may still be shown).
+  static let clipboardEnabled = Key<Bool>("clipboardEnabled", default: true)
+  static let screenshotEnabled = Key<Bool>("screenshotEnabled", default: true)
+  static let notesEnabled = Key<Bool>("notesEnabled", default: true)
+
   static let searchMode = Key<Search.Mode>("searchMode", default: .exact)
   static let showFooter = Key<Bool>("showFooter", default: true)
   static let showInStatusBar = Key<Bool>("showInStatusBar", default: true)

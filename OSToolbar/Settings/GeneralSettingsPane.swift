@@ -21,6 +21,10 @@ struct GeneralSettingsPane: View {
         LaunchAtLogin.Toggle {
           Text("LaunchAtLogin", tableName: "GeneralSettings")
         }
+        Defaults.Toggle(key: .clipboardEnabled) {
+          Text("Enable clipboard history")
+        }
+        .help("When off, the clipboard shortcut and icon won't open the history, and new copies aren't recorded.")
       }
 
       Settings.Section(label: { Text("Open", tableName: "GeneralSettings") }) {

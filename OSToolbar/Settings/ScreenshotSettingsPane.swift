@@ -25,6 +25,10 @@ struct ScreenshotSettingsPane: View {
         LaunchAtLogin.Toggle {
           Text("Launch at login")
         }
+        Defaults.Toggle(key: .screenshotEnabled) {
+          Text("Enable screenshot")
+        }
+        .help("When off, the screenshot shortcuts and menu actions are disabled.")
       }
 
       Settings.Section(label: { Text("Region shortcut") }) {

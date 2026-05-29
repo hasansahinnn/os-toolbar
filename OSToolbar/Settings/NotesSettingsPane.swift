@@ -18,6 +18,10 @@ struct NotesSettingsPane: View {
         LaunchAtLogin.Toggle {
           Text("Launch at login")
         }
+        Defaults.Toggle(key: .notesEnabled) {
+          Text("Enable notes")
+        }
+        .help("When off, the Notes shortcut and menu actions are disabled.")
       }
 
       Settings.Section(bottomDivider: true, label: { Text("Notes folder") }) {

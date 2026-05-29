@@ -116,6 +116,7 @@ class Popup {
   }
 
   private func handleFirstKeyDown() {
+    guard Defaults[.clipboardEnabled] else { return }
     if isClosed() {
       open(height: height)
       state = .opening

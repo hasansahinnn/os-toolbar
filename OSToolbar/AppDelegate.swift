@@ -60,15 +60,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   @objc @MainActor private func menuCaptureRegion() {
+    guard Defaults[.screenshotEnabled] else { return showFeatureDisabled("Screenshot") }
     ScreenshotController.shared.capture()
   }
 
   @objc @MainActor private func menuCaptureFullScreen() {
+    guard Defaults[.screenshotEnabled] else { return showFeatureDisabled("Screenshot") }
     ScreenshotController.shared.captureFullScreen()
   }
 
   @objc @MainActor private func menuOpenScreenshotFolder() {
+    guard Defaults[.screenshotEnabled] else { return showFeatureDisabled("Screenshot") }
     ScreenshotPreferences.openInFinder()
+  }
+
+  // Lets the user know why nothing happened when they trigger a disabled feature
+  // from its menu (the shortcut path just stays silent).
+  @MainActor private func showFeatureDisabled(_ name: String) {
+    let alert = NSAlert()
+    alert.messageText = "\(name) is turned off"
+    alert.informativeText = "Enable it in \(name) → Preferences."
+    alert.addButton(withTitle: "OK")
+    alert.runModal()
   }
 
   @objc @MainActor private func menuOpenScreenshotPreferences() {
@@ -122,10 +135,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   @objc @MainActor private func menuOpenNotes() {
+    guard Defaults[.notesEnabled] else { return showFeatureDisabled("Notes") }
     NotesController.shared.openWindow()
   }
 
   @objc @MainActor private func menuNewNote() {
+    guard Defaults[.notesEnabled] else { return showFeatureDisabled("Notes") }
     NotesController.shared.openWindow()
     NotesController.shared.newNote()
   }
@@ -144,7 +159,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Bridge FloatingPanel via AppDelegate.
     AppState.shared.appDelegate = self
 
-    Clipboard.shared.onNewCopy { History.shared.add($0) }
+    Clipboard.shared.onNewCopy { item in
+      guard Defaults[.clipboardEnabled] else { return }
+      History.shared.add(item)
+    }
     Clipboard.shared.start()
 
     Task {
@@ -215,19 +233,43 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     NoteAlarmManager.shared.start()
 
     KeyboardShortcuts.onKeyUp(for: .screenshot) {
+      guard Defaults[.screenshotEnabled] else { return }
       ScreenshotController.shared.capture()
     }
 
     KeyboardShortcuts.onKeyUp(for: .quickScreenshot) {
+      guard Defaults[.screenshotEnabled] else { return }
       ScreenshotController.shared.captureFullScreen()
     }
 
     KeyboardShortcuts.onKeyUp(for: .openScreenshotFolder) {
+      guard Defaults[.screenshotEnabled] else { return }
       ScreenshotPreferences.openInFinder()
     }
 
     KeyboardShortcuts.onKeyUp(for: .openNotes) {
+      guard Defaults[.notesEnabled] else { return }
       NotesController.shared.openWindow()
+    }
+
+    // Register/unregister each feature's global shortcuts with the enabled flag.
+    // A disabled feature must fully release its hotkey so the combo (e.g. ⌘⇧N)
+    // passes through to other apps instead of being swallowed.
+    Task {
+      for await enabled in Defaults.updates(.clipboardEnabled) {
+        if enabled { KeyboardShortcuts.enable(.popup) } else { KeyboardShortcuts.disable(.popup) }
+      }
+    }
+    Task {
+      let names: [KeyboardShortcuts.Name] = [.screenshot, .quickScreenshot, .openScreenshotFolder]
+      for await enabled in Defaults.updates(.screenshotEnabled) {
+        if enabled { KeyboardShortcuts.enable(names) } else { KeyboardShortcuts.disable(names) }
+      }
+    }
+    Task {
+      for await enabled in Defaults.updates(.notesEnabled) {
+        if enabled { KeyboardShortcuts.enable(.openNotes) } else { KeyboardShortcuts.disable(.openNotes) }
+      }
     }
 
     panel = FloatingPanel(
@@ -297,6 +339,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
   @objc
   private func performStatusItemClick() {
+    // When the clipboard feature is off, the icon still opens a small menu so the
+    // user can turn it back on or reach Preferences.
+    guard Defaults[.clipboardEnabled] else {
+      showClipboardDisabledMenu()
+      return
+    }
     if let event = NSApp.currentEvent {
       let modifierFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
 
@@ -312,6 +360,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     panel.toggle(height: AppState.shared.popup.height, at: .statusItem)
+  }
+
+  private func showClipboardDisabledMenu() {
+    let menu = NSMenu()
+    let enable = NSMenuItem(title: "Enable Clipboard History", action: #selector(enableClipboard), keyEquivalent: "")
+    enable.target = self
+    menu.addItem(enable)
+    menu.addItem(.separator())
+    let prefs = NSMenuItem(title: "Preferences…", action: #selector(openMainPreferences), keyEquivalent: "")
+    prefs.target = self
+    menu.addItem(prefs)
+    let quit = NSMenuItem(title: "Quit", action: #selector(menuQuit), keyEquivalent: "")
+    quit.target = self
+    menu.addItem(quit)
+    if let button = statusItem.button {
+      menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
+    }
+  }
+
+  @objc private func enableClipboard() {
+    Defaults[.clipboardEnabled] = true
+  }
+
+  @objc @MainActor private func openMainPreferences() {
+    AppState.shared.openPreferences()
   }
 
   private func synchronizeMenuIconText() {
