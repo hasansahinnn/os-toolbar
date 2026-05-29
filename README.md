@@ -65,21 +65,14 @@ You can verify this yourself — search the source: there are no `URLSession`,
 Don't take our word for it — verify it yourself with free tools:
 
 ### Scan with VirusTotal (free, 70+ antivirus engines)
-This release has already been scanned — see the public report:
+This release has already been scanned — **0 / 61 security vendors flagged it** (clean):
 
-**▶ [VirusTotal report for OSToolbar-v1.0.0.dmg](https://www.virustotal.com/gui/file/349bd87ea9bf9bcb8fdbc9ac7ac5d05f4d545ed8ce7dab71dcdc5749fb87c095)**
+**▶ [VirusTotal report for OSToolbar-v1.0.0.dmg](https://www.virustotal.com/gui/file/f8dd5dc9501f3636ff87ac591a749434a069af8703b66bcb48ad9459729530a7)**
 
-You can also re-upload it yourself at [virustotal.com](https://www.virustotal.com/gui/home/upload).
+`SHA-256: f8dd5dc9501f3636ff87ac591a749434a069af8703b66bcb48ad9459729530a7`
 
-> **About the 1/61 "Wacatac.B!ml" result:** only Microsoft Defender's *machine-learning*
-> engine flags it (note the `!ml` suffix = heuristic guess, not a known-malware signature).
-> Every signature-based engine — and even Microsoft's own non-ML scanner — reports
-> **Undetected**. `Wacatac.B!ml` is one of Defender's most common **false positives** for
-> brand-new, self-signed (non-notarized) apps with no download reputation yet — and an app
-> that *reads the clipboard and captures the screen* trips ML heuristics by design, even
-> though it sends nothing anywhere. The full source is in this repo; build it yourself to
-> confirm. (Such ML false positives can be reported to
-> [Microsoft's submission portal](https://www.microsoft.com/en-us/wdsi/filesubmission) to be cleared.)
+You can also re-upload it yourself at [virustotal.com](https://www.virustotal.com/gui/home/upload)
+and compare the hash — it should match exactly.
 
 ---
 
