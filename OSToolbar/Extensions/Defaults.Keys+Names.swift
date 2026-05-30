@@ -54,6 +54,10 @@ extension Defaults.Keys {
 
   // Notes module
   static let notesDirectoryBookmark = Key<Data?>("notesDirectoryBookmark", default: nil)
+  // User-defined folder order (by display name). Folders not in the list keep
+  // their alphabetical order at the end.
+  static let notesFolderOrder = Key<[String]>("notesFolderOrder", default: [])
+  static let notesSortMode = Key<String>("notesSortMode", default: NoteSortMode.manual.rawValue)
 
   // Per-feature on/off switches. When a feature is disabled its shortcuts and
   // menu actions become no-ops (the menu-bar icon may still be shown).

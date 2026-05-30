@@ -69,6 +69,8 @@ struct NoteMeta: Codable {
   // Cached one-line body preview for the list (so it's consistent and doesn't
   // require loading the full note content). Defaults empty for older files.
   var preview: String
+  // Pinned notes appear in a dedicated "Pinned" section at the top of the list.
+  var isPinned: Bool
 
   init(
     id: UUID = UUID(),
@@ -77,7 +79,8 @@ struct NoteMeta: Codable {
     created: Date = Date(),
     modified: Date = Date(),
     alarms: [NoteAlarm] = [],
-    preview: String = ""
+    preview: String = "",
+    isPinned: Bool = false
   ) {
     self.id = id
     self.title = title
@@ -86,10 +89,11 @@ struct NoteMeta: Codable {
     self.modified = modified
     self.alarms = alarms
     self.preview = preview
+    self.isPinned = isPinned
   }
 
   private enum CodingKeys: String, CodingKey {
-    case id, title, color, created, modified, alarms, preview
+    case id, title, color, created, modified, alarms, preview, isPinned
   }
 
   init(from decoder: Decoder) throws {
@@ -101,6 +105,7 @@ struct NoteMeta: Codable {
     modified = try c.decode(Date.self, forKey: .modified)
     alarms = try c.decodeIfPresent([NoteAlarm].self, forKey: .alarms) ?? []
     preview = try c.decodeIfPresent(String.self, forKey: .preview) ?? ""
+    isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
   }
 }
 
@@ -118,6 +123,7 @@ final class Note: Identifiable {
   var alarms: [NoteAlarm]
   // One-line body preview shown in the list (kept in sync with content on save).
   var preview: String
+  var isPinned: Bool
 
   // Loaded lazily from content.rtfd when the note is opened in the editor.
   var attributed: NSAttributedString?
@@ -136,6 +142,7 @@ final class Note: Identifiable {
     self.modified = meta.modified
     self.alarms = meta.alarms
     self.preview = meta.preview
+    self.isPinned = meta.isPinned
   }
 
   var meta: NoteMeta {
@@ -146,13 +153,31 @@ final class Note: Identifiable {
       created: created,
       modified: modified,
       alarms: alarms,
-      preview: preview
+      preview: preview,
+      isPinned: isPinned
     )
   }
 
   // Stable list preview (cached in meta, not recomputed from lazily-loaded content).
   var snippet: String {
     preview.isEmpty ? "No additional text" : preview
+  }
+}
+
+// How notes are ordered in the list. `manual` preserves the user's drag-drop
+// order (persisted in `.order.json`); the others sort live by a date/title.
+enum NoteSortMode: String, CaseIterable, Identifiable, Codable {
+  case manual, edited, created, title
+
+  var id: String { rawValue }
+
+  var displayName: String {
+    switch self {
+    case .manual: return "Manual (Drag to Reorder)"
+    case .edited: return "Date Edited"
+    case .created: return "Date Created"
+    case .title: return "Title"
+    }
   }
 }
 

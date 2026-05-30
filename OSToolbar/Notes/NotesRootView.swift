@@ -29,6 +29,11 @@ struct NotesRootView: View {
   @State private var searchText = ""
   @FocusState private var searchFieldFocused: Bool
 
+  // Explicit drag-to-reorder mode. When on, rows show a ☰ handle on the left;
+  // hold and drag the row to reposition. Disables tap-to-select while active.
+  @State private var reorderFoldersMode = false
+  @State private var reorderNotesMode = false
+
   private var folderSelection: Binding<NoteFolder.ID?> {
     Binding(
       get: { controller.selectedFolderID },
@@ -74,6 +79,10 @@ struct NotesRootView: View {
 
   private var sidebar: some View {
     VStack(spacing: 0) {
+      if reorderFoldersMode {
+        reorderBar(title: "Reordering Folders", isOn: $reorderFoldersMode)
+        Divider()
+      }
       if searchActive {
         searchBar
         Divider()
@@ -96,6 +105,21 @@ struct NotesRootView: View {
         .help("Search all notes")
       }
     }
+  }
+
+  private func reorderBar(title: String, isOn: Binding<Bool>) -> some View {
+    HStack(spacing: 8) {
+      Image(systemName: "line.3.horizontal").foregroundStyle(.secondary)
+      Text(title).font(.subheadline).foregroundStyle(.secondary)
+      Spacer()
+      Button("Done") { isOn.wrappedValue = false }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.small)
+        .keyboardShortcut(.return)
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 6)
+    .background(.regularMaterial)
   }
 
   private var searchBar: some View {
@@ -161,6 +185,9 @@ struct NotesRootView: View {
     List(selection: folderSelection) {
       Section("Folders") {
         ForEach(controller.folders) { folder in folderRow(folder) }
+          .onMove { source, destination in
+            controller.moveFolders(from: source, to: destination)
+          }
       }
 
       if !controller.activeAlarms.isEmpty {
@@ -222,6 +249,20 @@ struct NotesRootView: View {
 
   private func folderRow(_ folder: NoteFolder) -> some View {
     HStack(spacing: 6) {
+      if reorderFoldersMode {
+        Image(systemName: "line.3.horizontal")
+          .foregroundStyle(.secondary)
+          .font(.callout)
+          .padding(.trailing, 2)
+          .draggable(folder.url.path) {
+            HStack(spacing: 4) {
+              Image(systemName: "folder")
+              Text(folder.name)
+            }
+            .padding(6)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+          }
+      }
       Image(systemName: "folder")
       if editingFolderID == folder.id {
         TextField("Folder", text: $editingText)
@@ -235,42 +276,61 @@ struct NotesRootView: View {
     }
     .contentShape(Rectangle())
     .tag(folder.id)
-    .onTapGesture {
-      guard editingFolderID != folder.id else { return }
-      // First click opens the folder; clicking it again (already selected) renames.
-      if controller.selectedFolderID == folder.id {
-        beginFolderRename(folder)
-      } else {
-        controller.selectFolder(folder)
+    .when(reorderFoldersMode) { view in
+      view.dropDestination(for: String.self) { items, _ in
+        guard let path = items.first else { return false }
+        controller.dropFolder(draggedPath: path, onto: folder)
+        return true
       }
     }
+    .when(!reorderFoldersMode) { view in
+      view.simultaneousGesture(TapGesture().onEnded {
+        guard editingFolderID != folder.id else { return }
+        controller.selectFolder(folder)
+      })
+    }
     .contextMenu {
-      Button("New Note") {
+      Button {
         controller.selectFolder(folder)
         controller.newNote()
+      } label: { Label("New Note", systemImage: "square.and.pencil") }
+      Button { beginFolderRename(folder) } label: { Label("Rename Folder", systemImage: "pencil") }
+      Button { reorderFoldersMode.toggle() } label: {
+        Label(reorderFoldersMode ? "Done Reordering" : "Reorder Folders",
+              systemImage: "arrow.up.arrow.down")
       }
-      Button("Rename") { beginFolderRename(folder) }
-      Button("Show in Finder") { reveal(folder.url) }
       Divider()
-      Button("Delete", role: .destructive) { confirmDeleteFolder(folder) }
+      Button { reveal(folder.url) } label: { Label("Show in Finder", systemImage: "folder") }
+      Button { controller.share(items: [folder.url]) } label: { Label("Share Folder", systemImage: "square.and.arrow.up") }
+      Divider()
+      Button(role: .destructive) { confirmDeleteFolder(folder) } label: { Label("Delete Folder", systemImage: "trash") }
     }
   }
 
   // MARK: - Notes list
 
   private var notesList: some View {
+    VStack(spacing: 0) {
+      if reorderNotesMode {
+        reorderBar(title: "Reordering Notes", isOn: $reorderNotesMode)
+        Divider()
+      }
+      notesListBody
+    }
+  }
+
+  private var notesListBody: some View {
     List(selection: noteSelection) {
       ForEach(controller.sections) { section in
         if let title = section.title {
+          let visible = controller.isCollapsed(section.id) ? [] : section.notes
           Section {
-            if !controller.isCollapsed(section.id) {
-              ForEach(section.notes) { noteRow($0) }
-            }
+            ForEach(visible) { noteRow($0, sectionID: section.id) }
           } header: {
             groupHeader(section, title: title)
           }
         } else {
-          ForEach(section.notes) { noteRow($0) }
+          ForEach(section.notes) { noteRow($0, sectionID: section.id) }
         }
       }
     }
@@ -281,6 +341,21 @@ struct NotesRootView: View {
     }
     .searchable(text: $controller.searchQuery, placement: .toolbar, prompt: "Search")
     .toolbar {
+      ToolbarItem {
+        Menu {
+          ForEach(NoteSortMode.allCases) { mode in
+            Button {
+              controller.sortMode = mode
+            } label: {
+              Label(mode.displayName,
+                    systemImage: controller.sortMode == mode ? "checkmark" : "")
+            }
+          }
+        } label: {
+          Image(systemName: "arrow.up.arrow.down")
+        }
+        .help("Sort by")
+      }
       ToolbarItem {
         Button { controller.groupByColor.toggle() } label: {
           Image(systemName: controller.groupByColor ? "circle.grid.2x2.fill" : "circle.grid.2x2")
@@ -317,9 +392,20 @@ struct NotesRootView: View {
     .buttonStyle(.plain)
   }
 
-  private func noteRow(_ note: Note) -> some View {
+  private func noteRow(_ note: Note, sectionID: String) -> some View {
     VStack(alignment: .leading, spacing: 3) {
       HStack(spacing: 6) {
+        if reorderNotesMode {
+          Image(systemName: "line.3.horizontal")
+            .foregroundStyle(.secondary)
+            .font(.callout)
+            .padding(.trailing, 2)
+            .draggable(note.id.uuidString) {
+              Text(note.title.isEmpty ? "Untitled" : note.title)
+                .padding(6)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+            }
+        }
         if note.color != .none {
           Circle().fill(note.color.color).frame(width: 9, height: 9)
         }
@@ -335,6 +421,12 @@ struct NotesRootView: View {
             .lineLimit(1)
         }
         Spacer()
+        if note.isPinned {
+          Image(systemName: "pin.fill")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .rotationEffect(.degrees(45))
+        }
         if note.hasPendingAlarm {
           Image(systemName: "bell.fill")
             .font(.caption2)
@@ -353,29 +445,63 @@ struct NotesRootView: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .contentShape(Rectangle())
     .tag(note.id)
-    .onTapGesture {
-      guard editingNoteID != note.id else { return }
-      // First click opens the note; clicking it again (already selected) renames.
-      if controller.selectedNoteID == note.id {
-        beginNoteRename(note)
-      } else {
+    .when(!reorderNotesMode) { view in
+      view.simultaneousGesture(TapGesture().onEnded {
+        guard editingNoteID != note.id else { return }
         controller.selectNote(note)
+      })
+    }
+    // In Reorder mode the row accepts drops; drag is initiated from the ☰ handle
+    // on the left so the user picks the row up only when they grab the handle.
+    .when(reorderNotesMode) { view in
+      view.dropDestination(for: String.self) { items, _ in
+        guard let raw = items.first, let id = UUID(uuidString: raw) else { return false }
+        controller.dropNote(draggedID: id, onto: note, sectionID: sectionID)
+        return true
       }
     }
     .contextMenu {
-      Menu("Color") {
+      Button {
+        controller.togglePin(note)
+      } label: {
+        Label(note.isPinned ? "Unpin Note" : "Pin Note",
+              systemImage: note.isPinned ? "pin.slash" : "pin")
+      }
+      Button { beginNoteRename(note) } label: { Label("Rename", systemImage: "pencil") }
+      Button { reorderNotesMode.toggle() } label: {
+        Label(reorderNotesMode ? "Done Reordering" : "Reorder Notes",
+              systemImage: "arrow.up.arrow.down")
+      }
+      Button { controller.duplicate(note) } label: { Label("Duplicate Note", systemImage: "plus.square.on.square") }
+      Menu {
         ForEach(NoteColor.allCases) { color in
           Button {
             controller.setColor(color, for: note)
           } label: {
-            Label(color.displayName, systemImage: note.color == color ? "checkmark" : "circle")
+            Label(color.displayName, systemImage: note.color == color ? "checkmark.circle.fill" : "circle")
           }
         }
-      }
-      Button("Rename") { beginNoteRename(note) }
-      Button("Show in Finder") { reveal(note.directoryURL) }
+      } label: { Label("Flag", systemImage: "flag") }
+      Menu {
+        let others = controller.folders.filter { $0.id != controller.selectedFolderID }
+        if others.isEmpty {
+          Text("No other folders")
+        } else {
+          ForEach(others) { folder in
+            Button {
+              controller.move(note, to: folder)
+            } label: {
+              Label(folder.name, systemImage: "folder")
+            }
+          }
+        }
+      } label: { Label("Move to", systemImage: "folder") }
       Divider()
-      Button("Delete", role: .destructive) { confirmDeleteNote(note) }
+      Button { controller.copyNoteToClipboard(note) } label: { Label("Copy Note", systemImage: "doc.on.clipboard") }
+      Button { controller.shareNoteContent(note) } label: { Label("Share Note", systemImage: "square.and.arrow.up") }
+      Button { reveal(note.directoryURL) } label: { Label("Show in Finder", systemImage: "folder") }
+      Divider()
+      Button(role: .destructive) { confirmDeleteNote(note) } label: { Label("Delete", systemImage: "trash") }
     }
   }
 
@@ -398,6 +524,10 @@ struct NotesRootView: View {
         Divider()
         RichTextEditor(noteID: note.id, text: controller.editorText, bridge: bridge)
       }
+      // Force a full reconstruction of the editor (incl. NSTextView) whenever
+      // the selected note changes. Without this, transient races between
+      // selectNote and updateNSView could leave the old note's text in the view.
+      .id(note.id)
       .sheet(isPresented: $showTableSheet) { tableSheet }
     } else {
       ContentUnavailableView("No Note Selected", systemImage: "note.text")
@@ -549,6 +679,14 @@ struct NotesRootView: View {
       guard alert.runModal() == .alertFirstButtonReturn else { return }
     }
     controller.deleteNote(note)
+  }
+}
+
+// Conditional modifier helper.
+extension View {
+  @ViewBuilder
+  func when<T: View>(_ condition: Bool, transform: (Self) -> T) -> some View {
+    if condition { transform(self) } else { self }
   }
 }
 

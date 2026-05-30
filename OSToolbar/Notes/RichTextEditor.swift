@@ -442,11 +442,22 @@ struct RichTextEditor: NSViewRepresentable {
   final class Coordinator: NSObject, NSTextViewDelegate {
     weak var textView: NSTextView?
     var loadedNoteID: Note.ID?
+    // Dedicated undo manager per coordinator (so it dies with the SwiftUI view
+    // when `.id(note.id)` recreates it). Otherwise the window's shared undo
+    // manager keeps stale targets after the old NSTextView is deallocated and
+    // Cmd+Z crashes with EXC_BAD_ACCESS in NSUndoStack popAndInvoke.
+    let editorUndoManager = UndoManager()
+
+    func undoManager(for view: NSTextView) -> UndoManager? { editorUndoManager }
 
     func textDidChange(_ notification: Notification) {
       guard let textView = notification.object as? NSTextView else { return }
+      // Capture the note the text view currently shows so the controller can
+      // refuse the change if the selection has moved on (otherwise the old
+      // note's text would be written into the newly-selected note).
+      let expected = loadedNoteID
       MainActor.assumeIsolated {
-        NotesController.shared.editorContentChanged(textView.attributedString())
+        NotesController.shared.editorContentChanged(textView.attributedString(), expectedNoteID: expected)
       }
     }
   }

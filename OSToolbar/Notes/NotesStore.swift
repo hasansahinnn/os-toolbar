@@ -62,10 +62,21 @@ enum NotesStore {
       includingPropertiesForKeys: [.isDirectoryKey],
       options: [.skipsHiddenFiles]
     )) ?? []
-    return contents
+    let folders = contents
       .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
       .map { NoteFolder(url: $0) }
-      .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    let order = Defaults[.notesFolderOrder]
+    let index: [String: Int] = order.enumerated().reduce(into: [:]) { $0[$1.element] = $1.offset }
+    return folders.sorted { a, b in
+      let ai = index[a.name] ?? Int.max
+      let bi = index[b.name] ?? Int.max
+      if ai != bi { return ai < bi }
+      return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+    }
+  }
+
+  static func setFolderOrder(_ names: [String]) {
+    Defaults[.notesFolderOrder] = names
   }
 
   @discardableResult
@@ -112,7 +123,7 @@ enum NotesStore {
       includingPropertiesForKeys: [.isDirectoryKey],
       options: [.skipsHiddenFiles]
     )) ?? []
-    return contents.compactMap { url -> Note? in
+    let loaded: [Note] = contents.compactMap { url -> Note? in
       guard (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { return nil }
       let metaURL = url.appendingPathComponent("meta.json")
       guard let data = try? Data(contentsOf: metaURL),
@@ -134,7 +145,27 @@ enum NotesStore {
       }
       return note
     }
-    .sorted { $0.modified > $1.modified }
+    // Sort by the user-defined order stored in `.order.json`; notes not yet in
+    // the order fall back to most-recently-modified first.
+    let orderURL = folder.url.appendingPathComponent(".order.json")
+    let savedOrder: [UUID] = (try? Data(contentsOf: orderURL))
+      .flatMap { try? JSONDecoder.notes.decode([UUID].self, from: $0) } ?? []
+    let orderIndex: [UUID: Int] = savedOrder.enumerated().reduce(into: [:]) { $0[$1.element] = $1.offset }
+    return loaded.sorted { a, b in
+      let ai = orderIndex[a.id] ?? Int.max
+      let bi = orderIndex[b.id] ?? Int.max
+      if ai != bi { return ai < bi }
+      return a.modified > b.modified
+    }
+  }
+
+  static func setNoteOrder(in folder: NoteFolder, ids: [UUID]) {
+    let scoped = startScopedAccess(for: root)
+    defer { if scoped { root.stopAccessingSecurityScopedResource() } }
+    let url = folder.url.appendingPathComponent(".order.json")
+    if let data = try? JSONEncoder.notes.encode(ids) {
+      try? data.write(to: url, options: .atomic)
+    }
   }
 
   @discardableResult
@@ -161,6 +192,55 @@ enum NotesStore {
     let scoped = startScopedAccess(for: root)
     defer { if scoped { root.stopAccessingSecurityScopedResource() } }
     try? FileManager.default.trashItem(at: note.directoryURL, resultingItemURL: nil)
+  }
+
+  // Copies a note's directory next to itself with a new UUID and " Copy" suffix.
+  static func duplicateNote(_ note: Note) -> Note? {
+    let scoped = startScopedAccess(for: root)
+    defer { if scoped { root.stopAccessingSecurityScopedResource() } }
+    let parent = note.directoryURL.deletingLastPathComponent()
+    let baseName = uniqueName(sanitize(note.title + " Copy", fallback: "Note Copy"), in: parent)
+    let destination = parent.appendingPathComponent(baseName, isDirectory: true)
+    do {
+      try FileManager.default.copyItem(at: note.directoryURL, to: destination)
+    } catch {
+      NSLog("OSToolbar Notes: duplicate failed: \(error)")
+      return nil
+    }
+    // Give the copy a fresh identity + fresh alarms so original alarms aren't
+    // duplicated as scheduled timers.
+    var meta = NoteMeta(
+      id: UUID(),
+      title: note.title + " Copy",
+      color: note.color,
+      created: Date(),
+      modified: Date(),
+      alarms: [],
+      preview: note.preview,
+      isPinned: note.isPinned
+    )
+    let metaURL = destination.appendingPathComponent("meta.json")
+    if let data = try? JSONEncoder.notes.encode(meta) {
+      try? data.write(to: metaURL, options: .atomic)
+    }
+    return Note(directoryURL: destination, meta: meta)
+  }
+
+  // Moves a note's directory to a different folder; returns the new note ref.
+  @discardableResult
+  static func moveNote(_ note: Note, to folder: NoteFolder) -> Note? {
+    let scoped = startScopedAccess(for: root)
+    defer { if scoped { root.stopAccessingSecurityScopedResource() } }
+    let name = uniqueName(note.directoryURL.lastPathComponent, in: folder.url)
+    let destination = folder.url.appendingPathComponent(name, isDirectory: true)
+    do {
+      try FileManager.default.moveItem(at: note.directoryURL, to: destination)
+    } catch {
+      NSLog("OSToolbar Notes: moveNote failed: \(error)")
+      return nil
+    }
+    note.directoryURL = destination
+    return note
   }
 
   static func loadContent(_ note: Note) -> NSAttributedString {
