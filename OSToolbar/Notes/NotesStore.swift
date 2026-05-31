@@ -2,13 +2,13 @@ import AppKit
 import Defaults
 import Foundation
 
-// All on-disk persistence for the Notes feature. Notes are plain files/folders
-// (no database): each sidebar folder is a real directory, each note is a
-// directory holding `content.rtfd` and `meta.json`.
+/// On-disk persistence for the Notes feature. Each sidebar folder is a real
+/// directory; each note is a subdirectory with `content.rtfd` + `meta.json`.
+/// No SwiftData — plain filesystem so users can poke at the files directly.
 enum NotesStore {
-  // Real user home, resolved even inside the sandbox (NSHomeDirectory would
-  // return the container). A temporary-exception entitlement grants read/write
-  // to ~/Documents/OSToolbarNotes specifically.
+  // Serial background queue for note writes (RTFD serialize is slow on main).
+  private static let ioQueue = DispatchQueue(label: "com.ostoolbar.notes.io", qos: .utility)
+  // Real user home (NSHomeDirectory returns the sandbox container).
   static var realHome: URL {
     if let pw = getpwuid(getuid()), let dir = pw.pointee.pw_dir {
       return URL(fileURLWithPath: String(cString: dir))
@@ -22,8 +22,7 @@ enum NotesStore {
       .appendingPathComponent("OSToolbarNotes", isDirectory: true)
   }
 
-  // Resolved notes root: a user-chosen folder (security-scoped bookmark) when
-  // set, otherwise the default ~/Documents/OSToolbarNotes.
+  // User-chosen folder (security-scoped bookmark) or the default root.
   static var root: URL {
     if let data = Defaults[.notesDirectoryBookmark], let url = resolveBookmark(data) {
       return url
@@ -35,6 +34,7 @@ enum NotesStore {
 
   // MARK: - Setup
 
+  /// Creates the notes root if missing and seeds a default "Notes" folder.
   @discardableResult
   static func ensureRoot() -> URL {
     let dir = root
@@ -53,6 +53,7 @@ enum NotesStore {
 
   // MARK: - Folders
 
+  /// All folders in the notes root, ordered per user preference then name.
   static func listFolders() -> [NoteFolder] {
     let dir = ensureRoot()
     let scoped = startScopedAccess(for: dir)
@@ -75,10 +76,12 @@ enum NotesStore {
     }
   }
 
+  /// Persists the user's manual folder ordering.
   static func setFolderOrder(_ names: [String]) {
     Defaults[.notesFolderOrder] = names
   }
 
+  /// Creates a new folder with a sanitized + de-duplicated name.
   @discardableResult
   static func createFolder(named rawName: String) -> NoteFolder? {
     let dir = ensureRoot()
@@ -95,6 +98,7 @@ enum NotesStore {
     }
   }
 
+  /// Renames the folder directory on disk; updates the folder reference in place.
   static func renameFolder(_ folder: NoteFolder, to rawName: String) {
     let parent = folder.url.deletingLastPathComponent()
     let scoped = startScopedAccess(for: root)
@@ -107,6 +111,7 @@ enum NotesStore {
     folder.name = name
   }
 
+  /// Moves the folder to Trash (recoverable).
   static func deleteFolder(_ folder: NoteFolder) {
     let scoped = startScopedAccess(for: root)
     defer { if scoped { root.stopAccessingSecurityScopedResource() } }
@@ -115,7 +120,10 @@ enum NotesStore {
 
   // MARK: - Notes
 
-  static func listNotes(in folder: NoteFolder) -> [Note] {
+  /// All notes in a folder, ordered per `.order.json` then modification date.
+  /// `generateMissingPreviews: false` skips the per-note RTFD parse — pass it
+  /// when only metadata is needed (alarm scan, search).
+  static func listNotes(in folder: NoteFolder, generateMissingPreviews: Bool = true) -> [Note] {
     let scoped = startScopedAccess(for: root)
     defer { if scoped { root.stopAccessingSecurityScopedResource() } }
     let contents = (try? FileManager.default.contentsOfDirectory(
@@ -131,10 +139,8 @@ enum NotesStore {
         return nil
       }
       let note = Note(directoryURL: url, meta: meta)
-      // Older notes have no cached preview — compute it once from content and
-      // write it back, so the list shows a consistent snippet without loading
-      // content lazily (which made previews appear only after opening a note).
-      if note.preview.isEmpty,
+      // Compute & cache the preview for older notes that don't have one yet.
+      if generateMissingPreviews, note.preview.isEmpty,
          let attributed = try? NSAttributedString(
            url: note.contentURL,
            options: [.documentType: NSAttributedString.DocumentType.rtfd],
@@ -145,8 +151,7 @@ enum NotesStore {
       }
       return note
     }
-    // Sort by the user-defined order stored in `.order.json`; notes not yet in
-    // the order fall back to most-recently-modified first.
+    // User-defined order from `.order.json`; unknown notes fall back to recency.
     let orderURL = folder.url.appendingPathComponent(".order.json")
     let savedOrder: [UUID] = (try? Data(contentsOf: orderURL))
       .flatMap { try? JSONDecoder.notes.decode([UUID].self, from: $0) } ?? []
@@ -159,6 +164,7 @@ enum NotesStore {
     }
   }
 
+  /// Persists the user's manual note ordering inside a folder.
   static func setNoteOrder(in folder: NoteFolder, ids: [UUID]) {
     let scoped = startScopedAccess(for: root)
     defer { if scoped { root.stopAccessingSecurityScopedResource() } }
@@ -168,6 +174,7 @@ enum NotesStore {
     }
   }
 
+  /// Creates an empty note (empty RTFD + default meta) inside a folder.
   @discardableResult
   static func createNote(in folder: NoteFolder, title: String = "New Note") -> Note? {
     let scoped = startScopedAccess(for: root)
@@ -188,13 +195,14 @@ enum NotesStore {
     }
   }
 
+  /// Moves the note to Trash (recoverable).
   static func deleteNote(_ note: Note) {
     let scoped = startScopedAccess(for: root)
     defer { if scoped { root.stopAccessingSecurityScopedResource() } }
     try? FileManager.default.trashItem(at: note.directoryURL, resultingItemURL: nil)
   }
 
-  // Copies a note's directory next to itself with a new UUID and " Copy" suffix.
+  // Copies the note's directory next to itself with a new UUID + " Copy" suffix.
   static func duplicateNote(_ note: Note) -> Note? {
     let scoped = startScopedAccess(for: root)
     defer { if scoped { root.stopAccessingSecurityScopedResource() } }
@@ -243,6 +251,8 @@ enum NotesStore {
     return note
   }
 
+  /// Reads the note's `content.rtfd` into an NSAttributedString. Returns empty
+  /// string on missing/corrupt file.
   static func loadContent(_ note: Note) -> NSAttributedString {
     let scoped = startScopedAccess(for: root)
     defer { if scoped { root.stopAccessingSecurityScopedResource() } }
@@ -256,13 +266,23 @@ enum NotesStore {
     return NSAttributedString(string: "")
   }
 
+  /// Writes the note's attributed content to disk. In-memory model updates
+  /// immediately; RTFD serialization happens on a background queue.
   static func saveContent(_ note: Note, attributed: NSAttributedString) {
-    let scoped = startScopedAccess(for: root)
-    defer { if scoped { root.stopAccessingSecurityScopedResource() } }
+    // In-memory updates immediate; RTFD write on ioQueue.
     note.modified = Date()
     note.preview = makePreview(attributed, title: note.title)
-    try? writeContent(attributed, to: note.contentURL)
-    saveMeta(note)
+    let contentURL = note.contentURL
+    let metaURL = note.metaURL
+    let metaSnapshot = note.meta
+    // Defensive copy in case the editor mutates storage mid-write.
+    let snapshot = (attributed.copy() as? NSAttributedString) ?? attributed
+    ioQueue.async {
+      let scoped = startScopedAccess(for: root)
+      defer { if scoped { root.stopAccessingSecurityScopedResource() } }
+      try? writeContent(snapshot, to: contentURL)
+      try? writeMeta(metaSnapshot, to: metaURL)
+    }
   }
 
   // First non-empty body line that isn't just the title, capped for the list.
@@ -276,13 +296,14 @@ enum NotesStore {
     return String(line.prefix(120))
   }
 
+  /// Persists only `meta.json` (no content rewrite). Use after color/pin/alarm updates.
   static func saveMeta(_ note: Note) {
     let scoped = startScopedAccess(for: root)
     defer { if scoped { root.stopAccessingSecurityScopedResource() } }
     try? writeMeta(note.meta, to: note.metaURL)
   }
 
-  // Renames the note's directory to match a new title (keeping content/meta).
+  /// Renames the note's directory to match a new title (preserves content/meta).
   static func renameNote(_ note: Note, to rawTitle: String) {
     let scoped = startScopedAccess(for: root)
     defer { if scoped { root.stopAccessingSecurityScopedResource() } }
@@ -302,6 +323,8 @@ enum NotesStore {
 
   // MARK: - Alarms
 
+  /// Marks an alarm `fired = true` directly on disk so subsequent launches
+  /// don't reschedule it. Called by NoteAlarmManager when an alarm triggers.
   static func markAlarmFired(noteDirectoryPath: String, alarmID: UUID) {
     let scoped = startScopedAccess(for: root)
     defer { if scoped { root.stopAccessingSecurityScopedResource() } }
@@ -328,9 +351,9 @@ enum NotesStore {
 
   // MARK: - Images
 
-  // Builds an attachment whose displayed size is capped to `maxWidth` (keeping
-  // aspect ratio) so pasted/inserted images don't fill the editor. The full
-  // image data is preserved on disk for the click-to-view-full-size feature.
+  /// Builds a text attachment for an inserted image. Display size is capped to
+  /// `maxWidth` (aspect-preserved); full bytes survive in the fileWrapper for
+  /// the click-to-view-full-size feature.
   static func makeImageAttachment(image: NSImage, maxWidth: CGFloat = 320) -> NSTextAttachment? {
     guard let tiff = image.tiffRepresentation else { return nil }
     let wrapper = FileWrapper(regularFileWithContents: tiff)
@@ -494,6 +517,8 @@ enum NotesStore {
 
   // MARK: - Choosing a custom folder
 
+  /// Opens an NSOpenPanel for the user to pick a new notes folder; persists
+  /// the result as a security-scoped bookmark.
   static func chooseDirectory() {
     let panel = NSOpenPanel()
     panel.canChooseDirectories = true
@@ -511,6 +536,7 @@ enum NotesStore {
     }
   }
 
+  /// Opens the notes root folder in Finder.
   static func openInFinder() {
     let dir = ensureRoot()
     NSWorkspace.shared.open(dir)

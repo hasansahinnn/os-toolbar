@@ -4,9 +4,9 @@ import Foundation
 import Observation
 import SwiftUI
 
-// App-level state for the Notes feature: the folder/note selection, the list
-// shown in the middle column, search/grouping, and autosave. Backed entirely by
-// NotesStore (files on disk).
+/// App-level state for the Notes feature. Owns the folder/note selection, the
+/// list view-model (filtering, sorting, grouping), debounced autosave, and
+/// alarm scheduling integration. Disk persistence is delegated to NotesStore.
 @MainActor
 @Observable
 final class NotesController {
@@ -14,36 +14,29 @@ final class NotesController {
 
   var folders: [NoteFolder] = []
   var notes: [Note] = []
-  // All pending alarms across every folder, shown in the sidebar "Alarms" section.
+  // Pending alarms across every folder, shown in the sidebar.
   var activeAlarms: [ActiveAlarmRow] = []
 
   var selectedFolderID: NoteFolder.ID?
   var selectedNoteID: Note.ID?
 
   var searchQuery: String = ""
-  // Group the notes list by color flag, with collapsible sections. On by default.
   var groupByColor: Bool = true
-  // Stored observable so SwiftUI re-renders the list immediately when the user
-  // picks a different sort mode (a Defaults-backed computed property wouldn't).
-  // Mirrored to Defaults for persistence.
+  // Stored observable (not a Defaults-backed computed) so SwiftUI re-renders on change.
   var sortMode: NoteSortMode = NoteSortMode(rawValue: Defaults[.notesSortMode]) ?? .manual {
     didSet { Defaults[.notesSortMode] = sortMode.rawValue }
   }
-  // Color group ids that are currently collapsed in the list.
   var collapsedColors: Set<String> = []
 
-  // Set when a folder/note is freshly created so the list can immediately put its
-  // name into inline-edit mode (like Finder/Notes).
+  // Freshly created → list opens inline rename immediately.
   var justCreatedFolderID: NoteFolder.ID?
   var justCreatedNoteID: Note.ID?
 
-  // The attributed content currently shown in the editor (bound to the note).
   var editorText = NSAttributedString(string: "")
 
   private var saveTask: Task<Void, Never>?
   private var loadingNoteIntoEditor = false
-  // The note with unsaved edits, if any. Used so we only re-save (and bump the
-  // modified date / reorder the list) when there were real changes.
+  // Only flush autosave when there were real edits (so selection doesn't bump `modified`).
   private var dirtyNoteID: Note.ID?
 
   private var windowController: NotesWindowController?
@@ -57,6 +50,7 @@ final class NotesController {
 
   // MARK: - Window
 
+  /// Shows the Notes window, creating its controller lazily.
   func openWindow() {
     if windowController == nil {
       windowController = NotesWindowController()
@@ -65,6 +59,8 @@ final class NotesController {
     windowController?.show()
   }
 
+  /// Opens the Notes window and navigates to the note at the given path
+  /// (used when the user clicks a fired alarm).
   func revealNote(atPath path: String) {
     openWindow()
     let noteURL = URL(fileURLWithPath: path)
@@ -79,6 +75,7 @@ final class NotesController {
 
   // MARK: - Loading
 
+  /// Re-reads folders from disk and refreshes the alarms sidebar.
   func loadFolders() {
     folders = NotesStore.listFolders()
     if selectedFolder == nil {
@@ -89,25 +86,30 @@ final class NotesController {
     refreshActiveAlarms()
   }
 
-  // Scans all folders for pending alarms (for the sidebar Alarms section).
+  // Pending-alarm scan across every folder (sidebar Alarms section).
+  // Detached so the disk walk never blocks the UI.
   func refreshActiveAlarms() {
-    var rows: [ActiveAlarmRow] = []
-    for folder in folders {
-      for note in NotesStore.listNotes(in: folder) {
-        for alarm in note.alarms where alarm.isPending {
-          rows.append(ActiveAlarmRow(
-            id: alarm.id,
-            noteTitle: note.title.isEmpty ? "Untitled" : note.title,
-            notePath: note.directoryURL.path,
-            date: alarm.date,
-            label: alarm.title
-          ))
+    Task.detached(priority: .utility) {
+      var rows: [ActiveAlarmRow] = []
+      for folder in NotesStore.listFolders() {
+        for note in NotesStore.listNotes(in: folder, generateMissingPreviews: false) {
+          for alarm in note.alarms where alarm.isPending {
+            rows.append(ActiveAlarmRow(
+              id: alarm.id,
+              noteTitle: note.title.isEmpty ? "Untitled" : note.title,
+              notePath: note.directoryURL.path,
+              date: alarm.date,
+              label: alarm.title
+            ))
+          }
         }
       }
+      let sorted = rows.sorted { $0.date < $1.date }
+      await MainActor.run { self.activeAlarms = sorted }
     }
-    activeAlarms = rows.sorted { $0.date < $1.date }
   }
 
+  /// Re-reads the notes belonging to the currently-selected folder.
   func loadNotes() {
     guard let folder = selectedFolder else {
       notes = []
@@ -148,9 +150,8 @@ final class NotesController {
     }
   }
 
-  // Notes grouped into sections: a dedicated "Pinned" section on top when any
-  // notes are pinned, then either one section per color (when grouping is on)
-  // or one un-named section. Items are sorted per `sortMode`.
+  // Pinned section on top, then by-color sections (or a single section when
+  // grouping is off). Items inside each section sorted per `sortMode`.
   var sections: [NoteSection] {
     let items = filteredNotes
     let pinned = sortedNotes(items.filter { $0.isPinned })
@@ -184,14 +185,21 @@ final class NotesController {
 
   // MARK: - Selection
 
+  /// Sets the active folder, clears note selection, and reloads its notes.
   func selectFolder(_ folder: NoteFolder?) {
     selectedFolderID = folder?.id
     selectedNoteID = nil
     loadNotes()
   }
 
+  /// Switches the editor to a different note. Flushes pending autosave, drops
+  /// the previous note's loaded attributed string, and lazy-loads the new one.
   func selectNote(_ note: Note?) {
     flushPendingSave()
+    // Drop the previous note's attributed cache so image-heavy notes don't pile up.
+    if let previousID = selectedNoteID, previousID != note?.id {
+      notes.first(where: { $0.id == previousID })?.attributed = nil
+    }
     selectedNoteID = note?.id
     guard let note else {
       editorText = NSAttributedString(string: "")
@@ -207,6 +215,7 @@ final class NotesController {
 
   // MARK: - Folder CRUD
 
+  /// Creates a new folder ("New Folder"), selects it, and primes inline rename.
   func newFolder() {
     guard let folder = NotesStore.createFolder(named: "New Folder") else { return }
     loadFolders()
@@ -214,6 +223,7 @@ final class NotesController {
     justCreatedFolderID = folder.id
   }
 
+  /// Renames the folder on disk, reloads the folder list, keeps selection.
   func renameFolder(_ folder: NoteFolder, to name: String) {
     let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty, trimmed != folder.name else { return }
@@ -223,6 +233,7 @@ final class NotesController {
     selectFolder(folders.first { $0.id == newID })
   }
 
+  /// Trashes the folder (and all its notes).
   func deleteFolder(_ folder: NoteFolder) {
     NotesStore.deleteFolder(folder)
     if selectedFolderID == folder.id { selectedFolderID = nil }
@@ -231,6 +242,7 @@ final class NotesController {
 
   // MARK: - Note CRUD
 
+  /// Creates a new note in the active folder; auto-creates a folder if none.
   func newNote() {
     guard let folder = selectedFolder ?? folders.first else {
       // No folder yet — make one, then the note.
@@ -245,8 +257,7 @@ final class NotesController {
     justCreatedNoteID = note.id
   }
 
-  // Explicit rename (from double-clicking the title in the list). Independent of
-  // the note body — the title no longer auto-derives from the first line.
+  /// Renames a note (independent of body text).
   func renameNote(_ note: Note, to name: String) {
     let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty, trimmed != note.title else { return }
@@ -254,6 +265,7 @@ final class NotesController {
     refreshActiveAlarms()
   }
 
+  /// Deletes a note (cancels its alarms first), shifts selection to the next.
   func deleteNote(_ note: Note) {
     for alarm in note.alarms { NoteAlarmManager.shared.cancel(alarm) }
     NotesStore.deleteNote(note)
@@ -265,11 +277,8 @@ final class NotesController {
 
   // MARK: - Editing
 
-  // Called by the editor whenever its content changes. Saves on a short debounce.
-  // `expectedNoteID` is the note the editor *currently shows* (the text view's
-  // loaded note). It guards against a stray textDidChange that fires during a
-  // selection switch — the old note's text would otherwise be written into the
-  // newly-selected note, causing the "I see the other note's stuff" bug.
+  // Editor → controller. Debounced autosave (500ms). `expectedNoteID` rejects
+  // stray textDidChange events during selection switch.
   func editorContentChanged(_ attributed: NSAttributedString, expectedNoteID: Note.ID? = nil) {
     guard !loadingNoteIntoEditor, let note = selectedNote else { return }
     if let expectedNoteID, expectedNoteID != note.id { return }
@@ -289,8 +298,14 @@ final class NotesController {
     NotesStore.saveContent(note, attributed: attributed)
   }
 
-  // Only saves if there were actual edits — otherwise selecting a note would
-  // bump its modified date and reshuffle the list.
+  // Drops every loaded note's attributed cache. Called on window close.
+  func releaseAllLoadedContent() {
+    for note in notes { note.attributed = nil }
+    editorText = NSAttributedString(string: "")
+  }
+
+  /// Flushes the debounced autosave immediately. No-op when nothing's dirty —
+  /// selection alone must not bump `modified` (would re-sort the list).
   func flushPendingSave() {
     saveTask?.cancel()
     saveTask = nil
@@ -303,17 +318,20 @@ final class NotesController {
 
   // MARK: - Pin / Duplicate / Move / Share
 
+  /// Flips a note's pinned state and persists.
   func togglePin(_ note: Note) {
     note.isPinned.toggle()
     NotesStore.saveMeta(note)
   }
 
+  /// Duplicates a note (new UUID, " Copy" suffix); selects the copy.
   func duplicate(_ note: Note) {
     guard let copy = NotesStore.duplicateNote(note) else { return }
     notes.insert(copy, at: 0)
     selectNote(copy)
   }
 
+  /// Moves a note to another folder, re-scheduling its alarms under the new path.
   func move(_ note: Note, to folder: NoteFolder) {
     guard folder.id != selectedFolderID else { return }
     for alarm in note.alarms { NoteAlarmManager.shared.cancel(alarm) }
@@ -325,11 +343,8 @@ final class NotesController {
     refreshActiveAlarms()
   }
 
-  // Shares the note as a single NSAttributedString (text + inline images).
-  // Sharing services pick the representation they support: Mail/Notes get rich
-  // text with the embedded images, plain-text targets get the body text, and
-  // Copy puts a multi-representation entry on the pasteboard so paste-to-rich
-  // gets the formatted note while paste-to-plain gets the text.
+  /// Opens the native macOS share sheet on the note's attributed content.
+  /// Services pick whichever representation they support.
   func shareNoteContent(_ note: Note) {
     let attributed = note.attributed ?? NotesStore.loadContent(note)
     let payload: NSAttributedString = attributed.length > 0
@@ -338,10 +353,9 @@ final class NotesController {
     share(items: [payload])
   }
 
-  // Builds an HTML representation of the note's attributed string where every
-  // image attachment is inlined as a base64 data URI. This is what makes paste
-  // to Word, Google Docs, Slack, Notion, browsers, etc. actually show the
-  // pictures — the system's default HTML export drops them as unresolved refs.
+  // HTML with image attachments inlined as base64 data URIs.
+  // NSAttributedString's default HTML export drops them as unresolved refs,
+  // which is why Word / Google Docs etc. lose the images.
   private static func buildHTMLWithInlineImages(_ attributed: NSAttributedString) -> Data? {
     let fullRange = NSRange(location: 0, length: attributed.length)
     var html = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"/></head><body>"
@@ -422,9 +436,9 @@ final class NotesController {
 
   // MARK: - Alarms
 
+  /// Adds an alarm to the note and schedules it with NoteAlarmManager.
   func addAlarm(_ date: Date, title: String, to note: Note) {
-    // Zero the seconds so an alarm set "for 21:24" fires at 21:24:00, not part-way
-    // into the next minute (which felt ~1 minute late).
+    // Zero seconds so "21:24" fires at 21:24:00, not part-way into the next minute.
     var components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: date)
     components.second = 0
     let fireDate = Calendar.current.date(from: components) ?? date
@@ -435,6 +449,7 @@ final class NotesController {
     refreshActiveAlarms()
   }
 
+  /// Removes an alarm and cancels its pending fire.
   func removeAlarm(_ alarm: NoteAlarm, from note: Note) {
     note.alarms.removeAll { $0.id == alarm.id }
     NotesStore.saveMeta(note)
@@ -442,6 +457,7 @@ final class NotesController {
     refreshActiveAlarms()
   }
 
+  /// Drops fired/past alarms from a note.
   func clearPastAlarms(from note: Note) {
     let past = note.alarms.filter { !$0.isPending }
     for alarm in past { NoteAlarmManager.shared.cancel(alarm) }
@@ -456,8 +472,8 @@ final class NotesController {
   var globalSearchPending = false
   private var globalSearchTask: Task<Void, Never>?
 
-  // Debounced ~3s, then searches every note's title and content across all
-  // folders, grouping matches by their folder.
+  /// Triggers a 3s-debounced full-corpus search across every folder/note.
+  /// Results land in `globalSearchResults` grouped by folder.
   func setGlobalSearch(_ query: String) {
     globalSearchTask?.cancel()
     let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -476,18 +492,28 @@ final class NotesController {
 
   private func performGlobalSearch(_ query: String) {
     let needle = query.lowercased()
-    var sections: [GlobalSearchSection] = []
-    for folder in NotesStore.listFolders() {
-      let matches = NotesStore.listNotes(in: folder).filter { note in
-        if note.title.lowercased().contains(needle) { return true }
-        return NotesStore.loadContent(note).string.lowercased().contains(needle)
+    // Detached: title match short-circuits before the per-note RTFD parse.
+    Task.detached(priority: .utility) {
+      var sections: [GlobalSearchSection] = []
+      for folder in NotesStore.listFolders() {
+        let notes = NotesStore.listNotes(in: folder, generateMissingPreviews: false)
+        let matches = notes.filter { note in
+          if note.title.lowercased().contains(needle) { return true }
+          return NotesStore.loadContent(note).string.lowercased().contains(needle)
+        }
+        if !matches.isEmpty {
+          sections.append(GlobalSearchSection(
+            id: folder.url.path,
+            folderName: folder.name,
+            notes: matches
+          ))
+        }
       }
-      if !matches.isEmpty {
-        sections.append(GlobalSearchSection(id: folder.url.path, folderName: folder.name, notes: matches))
+      await MainActor.run {
+        self.globalSearchResults = sections
+        self.globalSearchPending = false
       }
     }
-    globalSearchResults = sections
-    globalSearchPending = false
   }
 
   func openGlobalSearchResult(_ note: Note) {
@@ -503,8 +529,7 @@ final class NotesController {
     NotesStore.setFolderOrder(arr.map { $0.name })
   }
 
-  // Drag-drop drop handler for folders (used by Reorder mode). Inserts the
-  // dragged folder immediately before the target.
+  // Folder reorder drop. Direction-aware insertion (before for up, after for down).
   func dropFolder(draggedPath: String, onto target: NoteFolder) {
     let draggedURL = URL(fileURLWithPath: draggedPath)
     guard draggedURL != target.url,
@@ -521,11 +546,8 @@ final class NotesController {
     NotesStore.setFolderOrder(arr.map { $0.name })
   }
 
-  // Drag-and-drop drop handler: insert the dragged note immediately before the
-  // target note. Only reorders within the same section (color group when
-  // grouping is on) — cross-section drops are ignored so a color flag never
-  // changes from a drag. Also flips sortMode to `.manual` so the new order is
-  // actually visible (otherwise an active "Date Edited" sort would override it).
+  // Note reorder drop. Same-section only (drag never changes color flag).
+  // Flips sortMode to `.manual` so the new order is actually visible.
   func dropNote(draggedID: UUID, onto targetNote: Note, sectionID: String) {
     guard draggedID != targetNote.id else { return }
     guard let section = sections.first(where: { $0.id == sectionID }) else { return }
@@ -542,9 +564,7 @@ final class NotesController {
     var rebuilt = notes
     rebuilt.remove(at: sourceIdx)
     var insertIdx = rebuilt.firstIndex { $0.id == targetNote.id } ?? rebuilt.endIndex
-    // Dragging downward (source above target) puts the note AFTER the target;
-    // dragging upward puts it BEFORE. Otherwise dropping just below the source
-    // would be a no-op (inserting before the next row leaves the same order).
+    // Downward drag → insert AFTER target; upward → BEFORE.
     if sourceIdx < targetIdx { insertIdx += 1 }
     rebuilt.insert(dragged, at: insertIdx)
     notes = rebuilt
@@ -553,14 +573,9 @@ final class NotesController {
     }
   }
 
-  // Writes the note to the system pasteboard in the broadest set of formats so
-  // pasting works everywhere — including images:
-  //   • RTFD (com.apple.flat-rtfd) — native rich editors (our notes, TextEdit,
-  //     Mail, macOS Notes) get text + inline images.
-  //   • HTML — web editors & non-Apple apps (Google Docs, browsers, Slack,
-  //     Notion) get text + images embedded as base64 data URIs.
-  //   • RTF — Microsoft Word and other RTF-only consumers.
-  //   • Plain text — fallback.
+  /// Copies the note to the system pasteboard in 4 representations so paste
+  /// works everywhere with images intact: RTFD (Apple), HTML with inline
+  /// base64 (web/Office), RTF, plain text.
   func copyNoteToClipboard(_ note: Note) {
     let attributed = note.attributed ?? NotesStore.loadContent(note)
     let range = NSRange(location: 0, length: attributed.length)
@@ -574,9 +589,6 @@ final class NotesController {
       rtfdData = data
       declared.append(.rtfd)
     }
-    // Build HTML manually so images are embedded as base64 data URIs (the
-    // default NSAttributedString HTML emits unresolved img placeholders, which
-    // is why Word / Google Docs lost the pictures).
     let htmlData: Data? = Self.buildHTMLWithInlineImages(attributed)
     if htmlData != nil { declared.append(.html) }
     var rtfData: Data?
@@ -598,9 +610,7 @@ final class NotesController {
     pb.setString(text.isEmpty ? (note.title.isEmpty ? "Untitled" : note.title) : text, forType: .string)
   }
 
-  // Reorder notes within a single section (a color group, or the lone section
-  // when grouping is off). The global `notes` array is rebuilt so notes from
-  // OTHER sections keep their slots and only this section's notes get shuffled.
+  // Single-section reorder. Other sections' notes keep their slots in `notes`.
   func moveNotes(sectionID: String, from source: IndexSet, to destination: Int) {
     guard let section = sections.first(where: { $0.id == sectionID }) else { return }
     var sectionNotes = section.notes

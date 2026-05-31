@@ -1,8 +1,9 @@
 import AppKit
 import SwiftUI
 
-// Hosts the Notes UI in a normal resizable window (separate from the clipboard
-// popup and screenshot overlay).
+/// Hosts the Notes UI in a regular resizable window. Switches the app
+/// activation policy from `.accessory` to `.regular` while open (so the
+/// window appears in Cmd-Tab) and back to `.accessory` on close.
 @MainActor
 final class NotesWindowController: NSWindowController, NSWindowDelegate {
   convenience init() {
@@ -19,6 +20,7 @@ final class NotesWindowController: NSWindowController, NSWindowDelegate {
     window.delegate = self
   }
 
+  /// Brings the Notes window to the front and switches the app to regular mode.
   func show() {
     // The app normally runs as a menu-bar accessory (no Dock icon, not in
     // Cmd-Tab). While the Notes window is open we switch to a regular app so the
@@ -30,7 +32,7 @@ final class NotesWindowController: NSWindowController, NSWindowDelegate {
 
   func windowWillClose(_ notification: Notification) {
     NotesController.shared.flushPendingSave()
-    // Back to accessory so the clipboard/screenshot stay menu-bar only.
-    NSApp.setActivationPolicy(.accessory)
+    NotesController.shared.releaseAllLoadedContent()
+    NSApp.setActivationPolicy(.accessory)  // back to menu-bar-only
   }
 }

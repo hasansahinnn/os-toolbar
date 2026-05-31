@@ -1,13 +1,19 @@
 import AppKit
 import Defaults
+import ImageIO
 import Sauce
+import UniformTypeIdentifiers
 
+/// Pasteboard watcher. Polls NSPasteboard every `clipboardCheckInterval`, builds
+/// a HistoryItem from each new copy, and fires registered hooks so History can
+/// insert them. Also exposes copy(_:) for putting items back on the pasteboard.
 class Clipboard {
   static let shared = Clipboard()
 
   typealias OnNewCopyHook = (HistoryItem) -> Void
 
   private var onNewCopyHooks: [OnNewCopyHook] = []
+  /// Last seen `NSPasteboard.changeCount` — used to detect new copies cheaply.
   var changeCount: Int
 
   private let pasteboard = NSPasteboard.general
@@ -39,14 +45,17 @@ class Clipboard {
     changeCount = pasteboard.changeCount
   }
 
+  /// Registers a callback invoked every time a new clip is detected on the pasteboard.
   func onNewCopy(_ hook: @escaping OnNewCopyHook) {
     onNewCopyHooks.append(hook)
   }
 
+  /// Removes all registered onNewCopy hooks.
   func clearHooks() {
     onNewCopyHooks = []
   }
 
+  /// Begins polling the pasteboard at the user-configured interval.
   func start() {
     timer = Timer.scheduledTimer(
       timeInterval: Defaults[.clipboardCheckInterval],
@@ -57,11 +66,13 @@ class Clipboard {
     )
   }
 
+  /// Re-creates the polling timer (use after the interval default changes).
   func restart() {
     timer?.invalidate()
     start()
   }
 
+  /// Writes a plain string to the system pasteboard, then immediately checks for changes.
   @MainActor
   func copy(_ string: String) {
     pasteboard.clearContents()
@@ -70,6 +81,8 @@ class Clipboard {
     checkForChangesInPasteboard()
   }
 
+  /// Writes a history item back to the system pasteboard. With `removeFormatting`,
+  /// strips rich-text content and keeps only plain text + file URLs.
   @MainActor
   func copy(_ item: HistoryItem?, removeFormatting: Bool = false) {
     guard let item else { return }
@@ -83,6 +96,8 @@ class Clipboard {
 
     for content in contents {
       guard content.type != NSPasteboard.PasteboardType.fileURL.rawValue else { continue }
+      // Internal thumbnail — don't pollute paste targets with it.
+      guard content.type != NSPasteboard.PasteboardType.osToolbarThumbnail.rawValue else { continue }
       pasteboard.setData(content.value, forType: NSPasteboard.PasteboardType(content.type))
     }
 
@@ -108,34 +123,96 @@ class Clipboard {
     }
   }
 
-  // Based on https://github.com/Clipy/Clipy/blob/develop/Clipy/Sources/Services/PasteService.swift.
-  func paste() {
-    Accessibility.check()
+  /// Intentional no-op — OSToolbar never sends ⌘V to other apps.
+  /// Avoids needing the macOS Accessibility permission entirely.
+  func paste() {}
 
-    // Add flag that left/right modifier key has been pressed.
-    // See https://github.com/TermiT/Flycut/pull/18 for details.
-    let cmdFlag = CGEventFlags(rawValue: UInt64(KeyChord.pasteKeyModifiers.rawValue) | 0x000008)
-    var vCode = Sauce.shared.keyCode(for: KeyChord.pasteKey)
+  // 2× display size (340 pt) — crisp on Retina without storing MBs.
+  private static let thumbnailMaxPixel: CGFloat = 680
+  private static let thumbnailQuality: CGFloat = 0.6
 
-    // Force QWERTY keycode when keyboard layout switches to
-    // QWERTY upon pressing ⌘ key (e.g. "Dvorak - QWERTY ⌘").
-    if KeyboardLayout.current.commandSwitchesToQWERTY && cmdFlag.contains(.maskCommand) {
-      vCode = KeyChord.pasteKey.QWERTYKeyCode
-    }
+  private static let imageTypeRawValues: Set<String> = [
+    NSPasteboard.PasteboardType.tiff.rawValue,
+    NSPasteboard.PasteboardType.png.rawValue,
+    NSPasteboard.PasteboardType.jpeg.rawValue,
+    NSPasteboard.PasteboardType.heic.rawValue
+  ]
 
-    let source = CGEventSource(stateID: .combinedSessionState)
-    // Disable local keyboard events while pasting
-    source?.setLocalEventsFilterDuringSuppressionState([.permitLocalMouseEvents, .permitSystemDefinedEvents],
-                                                       state: .eventSuppressionStateSuppressionInterval)
-
-    let keyVDown = CGEvent(keyboardEventSource: source, virtualKey: vCode, keyDown: true)
-    let keyVUp = CGEvent(keyboardEventSource: source, virtualKey: vCode, keyDown: false)
-    keyVDown?.flags = cmdFlag
-    keyVUp?.flags = cmdFlag
-    keyVDown?.post(tap: .cgSessionEventTap)
-    keyVUp?.post(tap: .cgSessionEventTap)
+  private static func imageBytes(in contents: [HistoryItemContent]) -> Data? {
+    contents.first(where: { imageTypeRawValues.contains($0.type) })?.value
   }
 
+  // Background-encodes the thumbnail and attaches it back on the main actor.
+  private static func attachThumbnailAsync(to historyItem: HistoryItem, from imageBytes: Data) {
+    Task.detached(priority: .utility) {
+      guard let jpeg = downsampledJPEG(from: imageBytes,
+                                       maxPixel: thumbnailMaxPixel,
+                                       quality: thumbnailQuality) else { return }
+      await MainActor.run {
+        let thumb = HistoryItemContent(
+          type: NSPasteboard.PasteboardType.osToolbarThumbnail.rawValue,
+          value: jpeg
+        )
+        thumb.item = historyItem
+        historyItem.contents.append(thumb)
+        // Decorator's first .onAppear ran before attach completed; nudge it.
+        History.shared.all.first(where: { $0.item === historyItem })?.ensureThumbnailImage()
+      }
+    }
+  }
+
+  // HTML-only web copies: extract first inline base64 <img>, decode, feed
+  // through the same pipeline. Regex + base64 + downsample all off-main.
+  private static func attachThumbnailFromHTMLAsync(to historyItem: HistoryItem, htmlBytes: Data) {
+    Task.detached(priority: .utility) {
+      guard let html = String(data: htmlBytes, encoding: .utf8)
+              ?? String(data: htmlBytes, encoding: .utf16)
+              ?? String(data: htmlBytes, encoding: .isoLatin1) else { return }
+      let pattern = #"<img[^>]*\bsrc=["']data:image/[^;]+;base64,([^"']+)["']"#
+      guard let regex = try? NSRegularExpression(pattern: pattern,
+                                                 options: [.caseInsensitive, .dotMatchesLineSeparators]),
+            let match = regex.firstMatch(in: html, options: [],
+                                         range: NSRange(html.startIndex..., in: html)),
+            match.numberOfRanges >= 2,
+            let range = Range(match.range(at: 1), in: html),
+            let imageBytes = Data(base64Encoded: String(html[range]),
+                                  options: .ignoreUnknownCharacters) else { return }
+      guard let jpeg = downsampledJPEG(from: imageBytes,
+                                       maxPixel: thumbnailMaxPixel,
+                                       quality: thumbnailQuality) else { return }
+      await MainActor.run {
+        let thumb = HistoryItemContent(
+          type: NSPasteboard.PasteboardType.osToolbarThumbnail.rawValue,
+          value: jpeg
+        )
+        thumb.item = historyItem
+        historyItem.contents.append(thumb)
+        History.shared.all.first(where: { $0.item === historyItem })?.ensureThumbnailImage()
+      }
+    }
+  }
+
+  // ImageIO downscale → JPEG re-encode. Reads only what's needed for the target size.
+  private static func downsampledJPEG(from data: Data, maxPixel: CGFloat, quality: CGFloat) -> Data? {
+    guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+    let opts: [CFString: Any] = [
+      kCGImageSourceCreateThumbnailFromImageAlways: true,
+      kCGImageSourceCreateThumbnailWithTransform: true,
+      kCGImageSourceShouldCacheImmediately: true,
+      kCGImageSourceThumbnailMaxPixelSize: maxPixel
+    ]
+    guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, opts as CFDictionary) else {
+      return nil
+    }
+    let out = NSMutableData()
+    guard let dest = CGImageDestinationCreateWithData(out, UTType.jpeg.identifier as CFString, 1, nil) else {
+      return nil
+    }
+    CGImageDestinationAddImage(dest, cgImage, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
+    return CGImageDestinationFinalize(dest) ? (out as Data) : nil
+  }
+
+  /// Clears the system pasteboard if the user has opted in via Defaults.
   func clear() {
     guard Defaults[.clearSystemClipboard] else {
       return
@@ -144,6 +221,9 @@ class Clipboard {
     pasteboard.clearContents()
   }
 
+  /// Polling tick: detects new pasteboard contents, builds a HistoryItem, and
+  /// invokes onNewCopy hooks. Skips when the change came from our own copy(),
+  /// the source app is ignored, or the user has paused history capture.
   @objc
   @MainActor
   func checkForChangesInPasteboard() { // swiftlint:disable:this cyclomatic_complexity
@@ -210,10 +290,16 @@ class Clipboard {
       return
     }
 
+    // Image bytes for background thumbnail gen — direct first, HTML inline as fallback.
+    let imageBytesForThumbnail = Self.imageBytes(in: contents)
+    let htmlBytesForImageFallback: Data? = (imageBytesForThumbnail == nil)
+      ? contents.first(where: { $0.type == NSPasteboard.PasteboardType.html.rawValue })?.value
+      : nil
+
     let historyItem = HistoryItem(contents: contents)
 
     if #unavailable(macOS 15.0) {
-      // On macOS 14 the history item needs to be inserted into storage directly after creating it.
+      // macOS 14: insert before the hook runs.
       try? History.shared.insertIntoStorage(historyItem)
     }
 
@@ -221,6 +307,12 @@ class Clipboard {
     historyItem.title = historyItem.generateTitle()
 
     onNewCopyHooks.forEach({ $0(historyItem) })
+
+    if let imageBytes = imageBytesForThumbnail {
+      Self.attachThumbnailAsync(to: historyItem, from: imageBytes)
+    } else if let html = htmlBytesForImageFallback {
+      Self.attachThumbnailFromHTMLAsync(to: historyItem, htmlBytes: html)
+    }
   }
 
   private func shouldIgnore(_ types: Set<NSPasteboard.PasteboardType>) -> Bool {
@@ -311,4 +403,5 @@ class Clipboard {
 
     return newContents
   }
+
 }

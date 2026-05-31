@@ -1,7 +1,66 @@
 import AppKit
 import SwiftUI
 
-// Marker glyphs used for list continuation / checkbox toggling.
+// Original (natural-size) image bytes stashed on every image attachment so
+// resize always computes from the natural size, not the currently-displayed one.
+extension NSAttributedString.Key {
+  static let osToolbarNaturalImageData = NSAttributedString.Key("OSToolbarNaturalImageData")
+}
+
+/// NSTextAttachmentCell that actually honours `attachment.bounds` for sizing
+/// (the default cell ignores bounds and draws at the image's natural size).
+final class ScalingAttachmentCell: NSTextAttachmentCell {
+  override func cellSize() -> NSSize {
+    if let attachment, attachment.bounds.width > 0 {
+      return attachment.bounds.size
+    }
+    return image?.size ?? .zero
+  }
+
+  override func cellFrame(
+    for textContainer: NSTextContainer,
+    proposedLineFragment lineFrag: NSRect,
+    glyphPosition position: NSPoint,
+    characterIndex charIndex: Int
+  ) -> NSRect {
+    if let attachment, attachment.bounds.width > 0 {
+      return NSRect(origin: .zero, size: attachment.bounds.size)
+    }
+    return super.cellFrame(
+      for: textContainer,
+      proposedLineFragment: lineFrag,
+      glyphPosition: position,
+      characterIndex: charIndex
+    )
+  }
+
+  override func draw(withFrame cellFrame: NSRect, in controlView: NSView?) {
+    guard let img = image
+            ?? attachment?.fileWrapper?.regularFileContents.flatMap({ NSImage(data: $0) }) else { return }
+    // Text views render in flipped coordinates. The plain `draw(in:)` overload
+    // doesn't honour the flip, so images came out upside-down. The
+    // `respectFlipped: true` overload tells NSImage to compensate.
+    img.draw(
+      in: cellFrame,
+      from: .zero,
+      operation: .copy,
+      fraction: 1,
+      respectFlipped: true,
+      hints: nil
+    )
+  }
+
+  override func draw(
+    withFrame cellFrame: NSRect,
+    in controlView: NSView?,
+    characterIndex charIndex: Int,
+    layoutManager: NSLayoutManager
+  ) {
+    draw(withFrame: cellFrame, in: controlView)
+  }
+}
+
+// Marker glyphs for list continuation / checkbox toggling.
 private enum ListMarker {
   static let uncheckedBox = "○ "
   static let checkedBox = "● "
@@ -9,17 +68,21 @@ private enum ListMarker {
   static let all = [uncheckedBox, checkedBox, bullet]
 }
 
-// Bridge that lets the SwiftUI toolbar drive the underlying NSTextView
-// (formatting commands operate on the current selection / typing attributes).
+/// Bridge from the SwiftUI editor toolbar to the underlying NSTextView.
+/// Owns all imperative formatting commands (bold, font size, insert link/image,
+/// table, clear formatting), called by toolbar button actions.
 @MainActor
 final class NoteEditorBridge {
   weak var textView: NSTextView?
 
   private var fontManager: NSFontManager { .shared }
 
+  /// Toggles bold on the selection (or typing attributes if none).
   func toggleBold() { applyTrait(.boldFontMask) }
+  /// Toggles italic on the selection (or typing attributes if none).
   func toggleItalic() { applyTrait(.italicFontMask) }
 
+  /// Toggles underline on the selection.
   func toggleUnderline() {
     guard let tv = textView else { return }
     tv.underline(nil)
@@ -52,6 +115,7 @@ final class NoteEditorBridge {
     notifyChange()
   }
 
+  /// Sets the font size (in points) on the selection.
   func setFontSize(_ size: CGFloat) {
     guard let tv = textView, let storage = tv.textStorage else { return }
     let range = tv.selectedRange()
@@ -69,6 +133,7 @@ final class NoteEditorBridge {
     notifyChange()
   }
 
+  /// Sets foreground colour on the selection.
   func setTextColor(_ color: NSColor) {
     guard let tv = textView else { return }
     let range = tv.selectedRange()
@@ -80,7 +145,9 @@ final class NoteEditorBridge {
     notifyChange()
   }
 
+  /// Prepends a bullet marker to the current line.
   func insertBullet() { insertLinePrefix(ListMarker.bullet) }
+  /// Prepends an unchecked checkbox marker to the current line.
   func insertChecklist() { insertLinePrefix(ListMarker.uncheckedBox) }
 
   private func insertLinePrefix(_ prefix: String) {
@@ -92,6 +159,7 @@ final class NoteEditorBridge {
     notifyChange()
   }
 
+  /// Wraps the current selection in a link (prompts the user for the URL).
   func insertLink() {
     guard let tv = textView else { return }
     let range = tv.selectedRange()
@@ -112,6 +180,7 @@ final class NoteEditorBridge {
     notifyChange()
   }
 
+  /// Opens NSOpenPanel for an image file and inserts it as an attachment.
   func insertImage() {
     guard let tv = textView else { return }
     let panel = NSOpenPanel()
@@ -126,6 +195,7 @@ final class NoteEditorBridge {
     notifyChange()
   }
 
+  /// Inserts an NSTextTable with the given dimensions at the caret.
   func insertTable(rows: Int, cols: Int) {
     guard let tv = textView, let storage = tv.textStorage, rows > 0, cols > 0 else { return }
 
@@ -163,53 +233,346 @@ final class NoteEditorBridge {
     notifyChange()
   }
 
+  // Drives the Clear-formatting popover's toggle defaults.
+  struct StylesPresent {
+    var background = false
+    var foreground = false
+    var underline = false
+    var strikethrough = false
+    var fontTraits = false       // bold or italic
+    var fontFamilyAndSize = false  // non-default family or size
+    var links = false
+  }
+
+  /// Scans the current selection (or whole note) and returns which formatting
+  /// attributes are actually present. Drives the Clear-formatting popover's defaults.
+  func detectStylesInSelection() -> StylesPresent {
+    var present = StylesPresent()
+    guard let tv = textView, let storage = tv.textStorage, storage.length > 0 else { return present }
+    var range = tv.selectedRange()
+    if range.length == 0 {
+      range = NSRange(location: 0, length: storage.length)
+    }
+    let defaultFamily = NSFont.systemFont(ofSize: 14).familyName
+    storage.enumerateAttributes(in: range, options: []) { attrs, _, _ in
+      if attrs[.backgroundColor] != nil { present.background = true }
+      if let color = attrs[.foregroundColor] as? NSColor,
+         color != .textColor, color != .labelColor {
+        present.foreground = true
+      }
+      if let underline = attrs[.underlineStyle] as? Int, underline != 0 { present.underline = true }
+      if let strike = attrs[.strikethroughStyle] as? Int, strike != 0 { present.strikethrough = true }
+      if let font = attrs[.font] as? NSFont {
+        let traits = NSFontManager.shared.traits(of: font)
+        if traits.contains(.boldFontMask) || traits.contains(.italicFontMask) {
+          present.fontTraits = true
+        }
+        if font.familyName != defaultFamily || abs(font.pointSize - 14) > 0.1 {
+          present.fontFamilyAndSize = true
+        }
+      }
+      if attrs[.link] != nil { present.links = true }
+    }
+    return present
+  }
+
+  /// Resets every attribute on the selection to defaults; images survive.
+  func clearAllFormatting() {
+    guard let tv = textView, let storage = tv.textStorage, storage.length > 0 else { return }
+    var range = tv.selectedRange()
+    if range.length == 0 {
+      range = NSRange(location: 0, length: storage.length)
+    }
+    let defaultAttrs: [NSAttributedString.Key: Any] = [
+      .font: NSFont.systemFont(ofSize: 14),
+      .foregroundColor: NSColor.textColor
+    ]
+    storage.beginEditing()
+    storage.enumerateAttributes(in: range, options: []) { attrs, subRange, _ in
+      var newAttrs = defaultAttrs
+      if let attachment = attrs[.attachment] {
+        newAttrs[.attachment] = attachment  // keep images
+      }
+      storage.setAttributes(newAttrs, range: subRange)
+    }
+    storage.endEditing()
+    notifyChange()
+  }
+
+  /// Strips only the flagged attributes from the selection (whole note if none).
+  func clearFormatting(
+    background: Bool,
+    foreground: Bool,
+    underline: Bool,
+    strikethrough: Bool,
+    fontTraits: Bool,
+    fontFamilyAndSize: Bool,
+    links: Bool
+  ) {
+    guard let tv = textView, let storage = tv.textStorage, storage.length > 0 else { return }
+    var range = tv.selectedRange()
+    if range.length == 0 {
+      range = NSRange(location: 0, length: storage.length)
+    }
+
+    storage.beginEditing()
+    if background { storage.removeAttribute(.backgroundColor, range: range) }
+    if underline { storage.removeAttribute(.underlineStyle, range: range) }
+    if strikethrough { storage.removeAttribute(.strikethroughStyle, range: range) }
+    if links { storage.removeAttribute(.link, range: range) }
+    if foreground {
+      storage.addAttribute(.foregroundColor, value: NSColor.textColor, range: range)
+    }
+    if fontTraits || fontFamilyAndSize {
+      storage.enumerateAttribute(.font, in: range, options: []) { value, subRange, _ in
+        let current = (value as? NSFont) ?? NSFont.systemFont(ofSize: 14)
+        var result: NSFont = fontFamilyAndSize ? NSFont.systemFont(ofSize: 14) : current
+        if fontTraits {
+          let traits = NSFontManager.shared.traits(of: result)
+          result = NSFontManager.shared.convert(result, toNotHaveTrait: traits)
+        }
+        storage.addAttribute(.font, value: result, range: subRange)
+      }
+    }
+    storage.endEditing()
+    notifyChange()
+  }
+
   private func notifyChange() {
     guard let tv = textView else { return }
     NotesController.shared.editorContentChanged(tv.attributedString())
   }
 }
 
-// NSTextView subclass that gives lists/checklists macOS-Notes-like behaviour:
-// pressing Return continues the list, and clicking a checkbox glyph toggles it.
-// Clicking an image opens it at full size.
+/// NSTextView subclass with macOS-Notes-like list continuation, click-to-toggle
+/// checkboxes, click-on-image options popover, hover preview button, and a
+/// custom paste path that synchronously decodes RTFD/HTML so images appear
+/// on the first paste (no broken-image placeholder dance).
 final class ListTextView: NSTextView {
-  // Max on-screen width for inline images so a pasted/large image doesn't overflow
-  // the editor. The full-resolution data is kept; click an image to view full size.
-  static let maxImageWidth: CGFloat = 340
+  // Max display width for inline images; capped to the container.
+  static let maxImageWidthFallback: CGFloat = 280
+
+  private var effectiveImageMaxWidth: CGFloat {
+    let containerWidth = textContainer?.size.width ?? Self.maxImageWidthFallback
+    let padded = max(120, containerWidth - 24)
+    return min(Self.maxImageWidthFallback, padded)
+  }
 
   override func paste(_ sender: Any?) {
+    if handleRichTextPaste() { return }
     super.paste(sender)
-    capImages()
+    schedulePostPasteCapImages()
   }
 
   override func pasteAsRichText(_ sender: Any?) {
+    if handleRichTextPaste() { return }
     super.pasteAsRichText(sender)
-    capImages()
+    schedulePostPasteCapImages()
   }
 
-  // Shrinks any oversized image attachments to maxImageWidth (keeping aspect),
-  // then reflows. Safe to call after paste/drag and after loading a note.
-  func capImages() {
-    guard let storage = textStorage, storage.length > 0 else { return }
-    var changed = false
-    storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
-      guard let attachment = value as? NSTextAttachment else { return }
-      let image = attachment.image
-        ?? attachment.fileWrapper?.regularFileContents.flatMap { NSImage(data: $0) }
-      guard let image, image.size.width > 0 else { return }
-      let width = attachment.bounds.width
-      if width <= 0 || width > Self.maxImageWidth {
-        let scale = min(Self.maxImageWidth / image.size.width, 1)
-        attachment.bounds = CGRect(
-          x: 0, y: 0,
-          width: (image.size.width * scale).rounded(),
-          height: (image.size.height * scale).rounded()
-        )
-        layoutManager?.invalidateLayout(forCharacterRange: range, actualCharacterRange: nil)
-        changed = true
+  // Synchronous rich-text paste. Bypasses super.paste's deferred image decode
+  // (caused broken-image placeholders on the first web paste). Returns true if
+  // it handled the pasteboard; false to let super.paste deal with non-rich data.
+  private func handleRichTextPaste() -> Bool {
+    guard let storage = textStorage else { return false }
+    let pb = NSPasteboard.general
+
+    var attributed: NSAttributedString?
+    if let data = pb.data(forType: .rtfd) {
+      attributed = NSAttributedString(rtfd: data, documentAttributes: nil)
+    }
+    if attributed == nil, let data = pb.data(forType: .html) {
+      attributed = NSAttributedString(html: data, documentAttributes: nil)
+    }
+    if attributed == nil, let data = pb.data(forType: .rtf) {
+      attributed = NSAttributedString(rtf: data, documentAttributes: nil)
+    }
+    guard let toInsert = attributed, toInsert.length > 0 else { return false }
+
+    let range = selectedRange()
+    guard shouldChangeText(in: range, replacementString: toInsert.string) else { return false }
+    storage.replaceCharacters(in: range, with: toInsert)
+    didChangeText()
+    schedulePostPasteCapImages()
+    return true
+  }
+
+  // Retry schedule for HTML-paste image attachments that resolve asynchronously
+  // (sometimes 500ms+ after super.paste returns).
+  private func schedulePostPasteCapImages() {
+    capImages()
+    for delay in [0.05, 0.2, 0.5, 1.0, 2.0] {
+      DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        self?.capImages()
       }
     }
+  }
+
+  // Natural-size image bytes for the attachment at `charIndex`. Tries every
+  // place NSTextAttachment can stash an image: custom attribute → fileWrapper
+  // → attachment.image → attachmentCell.image (HTML paste often lands here).
+  private func resolveNaturalImageData(at charIndex: Int) -> (image: NSImage, data: Data)? {
+    guard let storage = textStorage, charIndex < storage.length else { return nil }
+    let attributes = storage.attributes(at: charIndex, effectiveRange: nil)
+    if let data = attributes[.osToolbarNaturalImageData] as? Data,
+       let image = NSImage(data: data) {
+      return (image, data)
+    }
+    guard let attachment = attributes[.attachment] as? NSTextAttachment else { return nil }
+    if let wrapper = attachment.fileWrapper,
+       let data = wrapper.regularFileContents,
+       let image = NSImage(data: data) {
+      return (image, data)
+    }
+    if let image = attachment.image, let data = image.tiffRepresentation {
+      return (image, data)
+    }
+    if let cell = attachment.attachmentCell as? NSTextAttachmentCell,
+       let image = cell.image,
+       let data = image.tiffRepresentation {
+      return (image, data)
+    }
+    return nil
+  }
+
+  private static func makeResized(_ source: NSImage, to size: NSSize) -> NSImage {
+    let out = NSImage(size: size)
+    out.lockFocus()
+    source.draw(in: NSRect(origin: .zero, size: size), from: .zero, operation: .copy, fraction: 1)
+    out.unlockFocus()
+    return out
+  }
+
+  /// Walks attachments and (re)wraps each in a ScalingAttachmentCell. New ones
+  /// start at 50% of natural size capped to editor width; user-sized ones are kept.
+  func capImages() {
+    guard let storage = textStorage, storage.length > 0 else { return }
+    // Plain-text fast bail.
+    let fullRange = NSRange(location: 0, length: storage.length)
+    var hasAnyAttachment = false
+    storage.enumerateAttribute(.attachment, in: fullRange, options: []) { value, _, stop in
+      if value != nil { hasAnyAttachment = true; stop.pointee = true }
+    }
+    guard hasAnyAttachment else { return }
+
+    let maxWidth = effectiveImageMaxWidth
+    // Single begin/endEditing → relayout runs once even for multiple images.
+    storage.beginEditing()
+    var changed = false
+    var index = 0
+    while index < storage.length {
+      let attrs = storage.attributes(at: index, effectiveRange: nil)
+      guard let attachment = attrs[.attachment] as? NSTextAttachment,
+            let (naturalImage, naturalData) = resolveNaturalImageData(at: index) else {
+        index += 1; continue
+      }
+      let natural = naturalImage.size
+      let boundsWidth = attachment.bounds.width
+      let hasScalingCell = attachment.attachmentCell is ScalingAttachmentCell
+      let isUserSized = boundsWidth > 0 && boundsWidth < natural.width - 0.5
+
+      if hasScalingCell && isUserSized {
+        index += 1; continue  // already wrapped + sized
+      }
+
+      // Reloaded user-sized → keep saved bounds. Fresh → 50% of natural.
+      let targetSize: NSSize
+      if isUserSized {
+        targetSize = attachment.bounds.size
+      } else {
+        let targetWidth = min(natural.width * 0.5, maxWidth)
+        let scale = targetWidth / natural.width
+        targetSize = NSSize(
+          width: targetWidth.rounded(),
+          height: (natural.height * scale).rounded()
+        )
+      }
+      let replacement = buildAttachment(naturalBytes: naturalData, displaySize: targetSize)
+      let attrString = NSMutableAttributedString(attachment: replacement)
+      attrString.addAttribute(.osToolbarNaturalImageData, value: naturalData,
+                              range: NSRange(location: 0, length: 1))
+
+      let range = NSRange(location: index, length: 1)
+      storage.replaceCharacters(in: range, with: attrString)
+      changed = true
+      index += 1
+    }
+    storage.endEditing()
     if changed { needsDisplay = true }
+  }
+
+  // Display at `displaySize`, natural bytes preserved in fileWrapper for RTFD reload.
+  private func buildAttachment(naturalBytes: Data, displaySize: NSSize) -> NSTextAttachment {
+    let wrapper = FileWrapper(regularFileWithContents: naturalBytes)
+    wrapper.preferredFilename = "image-\(UUID().uuidString).tiff"
+    let attachment = NSTextAttachment()
+    attachment.fileWrapper = wrapper
+    attachment.bounds = NSRect(origin: .zero, size: displaySize)
+    attachment.attachmentCell = ScalingAttachmentCell(imageCell: NSImage(data: naturalBytes))
+    return attachment
+  }
+
+  // MARK: - Image click options (delete + resize)
+
+  private var imageOptionsPopover: NSPopover?
+
+  private func showImageOptions(for attachment: NSTextAttachment, at charIndex: Int) {
+    guard let layoutManager, let textContainer else { return }
+    let glyphRange = layoutManager.glyphRange(
+      forCharacterRange: NSRange(location: charIndex, length: 1),
+      actualCharacterRange: nil
+    )
+    var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+    let origin = textContainerOrigin
+    rect.origin.x += origin.x
+    rect.origin.y += origin.y
+
+    let view = ImageOptionsView(
+      onDelete: { [weak self] in
+        self?.deleteAttachment(at: charIndex)
+        self?.imageOptionsPopover?.close()
+      },
+      onResize: { [weak self] percent in
+        self?.resizeAttachment(at: charIndex, percent: percent)
+        self?.imageOptionsPopover?.close()
+      }
+    )
+
+    let hosting = NSHostingController(rootView: view)
+    let popover = NSPopover()
+    popover.contentViewController = hosting
+    popover.behavior = .transient
+    popover.show(relativeTo: rect, of: self, preferredEdge: .minY)
+    imageOptionsPopover = popover
+  }
+
+  private func deleteAttachment(at charIndex: Int) {
+    guard let storage = textStorage, charIndex < storage.length else { return }
+    let range = NSRange(location: charIndex, length: 1)
+    guard shouldChangeText(in: range, replacementString: "") else { return }
+    storage.replaceCharacters(in: range, with: "")
+    didChangeText()
+  }
+
+  private func resizeAttachment(at charIndex: Int, percent: Int) {
+    guard let storage = textStorage, charIndex < storage.length,
+          let (naturalImage, naturalData) = resolveNaturalImageData(at: charIndex) else { return }
+
+    let factor = CGFloat(percent) / 100
+    let newSize = NSSize(
+      width: (naturalImage.size.width * factor).rounded(),
+      height: (naturalImage.size.height * factor).rounded()
+    )
+
+    let replacement = buildAttachment(naturalBytes: naturalData, displaySize: newSize)
+    let attrString = NSMutableAttributedString(attachment: replacement)
+    attrString.addAttribute(.osToolbarNaturalImageData, value: naturalData,
+                            range: NSRange(location: 0, length: 1))
+
+    let range = NSRange(location: charIndex, length: 1)
+    guard shouldChangeText(in: range, replacementString: attrString.string) else { return }
+    storage.replaceCharacters(in: range, with: attrString)
+    didChangeText()
   }
 
   override func insertNewline(_ sender: Any?) {
@@ -220,7 +583,7 @@ final class ListTextView: NSTextView {
     for marker in ListMarker.all where lineText.hasPrefix(marker) {
       let body = String(lineText.dropFirst(marker.count)).trimmingCharacters(in: .whitespacesAndNewlines)
       if body.isEmpty {
-        // Empty list item → remove the marker and break out of the list.
+        // Empty list item: strip the marker, break out of the list.
         let removeRange = NSRange(location: lineRange.location, length: min(marker.count, lineRange.length))
         if shouldChangeText(in: removeRange, replacementString: "") {
           textStorage?.replaceCharacters(in: removeRange, with: "")
@@ -256,9 +619,13 @@ final class ListTextView: NSTextView {
         toggleCheckbox(at: charIndex, current: ch)
         return
       }
+      // Click on an image → show the inline options popover (delete + resize).
+      if let attachment = storage.attribute(.attachment, at: charIndex, effectiveRange: nil) as? NSTextAttachment,
+         attachment.image != nil || attachment.fileWrapper?.regularFileContents != nil {
+        showImageOptions(for: attachment, at: charIndex)
+        return
+      }
     }
-    // Images are NOT opened on click (that interfered with placing the cursor) —
-    // a preview button appears on hover instead (see updateImageHover).
     super.mouseDown(with: event)
   }
 
@@ -266,6 +633,7 @@ final class ListTextView: NSTextView {
 
   private var imageHoverButton: NSButton?
   private var hoveredAttachment: NSTextAttachment?
+  private var hoveredCharIndex = -1
   private var imageTrackingArea: NSTrackingArea?
 
   override func updateTrackingAreas() {
@@ -316,6 +684,7 @@ final class ListTextView: NSTextView {
     rect.origin.y += origin.y
 
     hoveredAttachment = attachment
+    hoveredCharIndex = charIndex
     let button = ensureHoverButton()
     let size: CGFloat = 30
     // Top-left of the image (the top-right has the image's own selection handle).
@@ -346,8 +715,15 @@ final class ListTextView: NSTextView {
   }
 
   @objc private func openHoveredImage() {
-    guard let attachment = hoveredAttachment else { return }
-    ImagePreviewWindow.show(attachment: attachment)
+    // Always open at 100% natural, regardless of in-editor display size.
+    if hoveredCharIndex >= 0,
+       let (naturalImage, _) = resolveNaturalImageData(at: hoveredCharIndex) {
+      ImagePreviewWindow.showImage(naturalImage)
+      return
+    }
+    if let attachment = hoveredAttachment {
+      ImagePreviewWindow.show(attachment: attachment)
+    }
   }
 
   private func toggleCheckbox(at index: Int, current: String) {
@@ -355,7 +731,7 @@ final class ListTextView: NSTextView {
     let range = NSRange(location: index, length: 1)
     guard shouldChangeText(in: range, replacementString: toggled) else { return }
     textStorage?.replaceCharacters(in: range, with: toggled)
-    // Strike through the rest of the line when checked, restore when unchecked.
+    // Strikethrough body when checked, clear when unchecked.
     let ns = string as NSString
     let line = ns.lineRange(for: range)
     let textStart = index + 1
@@ -368,8 +744,8 @@ final class ListTextView: NSTextView {
   }
 }
 
-// SwiftUI wrapper around a rich-text NSTextView. Loads `text` when `noteID`
-// changes (note switch) and reports edits back through the controller.
+/// SwiftUI wrapper for the ListTextView. Reloads content only on note switch
+/// (driven by `noteID`), never on keystrokes.
 struct RichTextEditor: NSViewRepresentable {
   var noteID: Note.ID?
   var text: NSAttributedString
@@ -430,7 +806,7 @@ struct RichTextEditor: NSViewRepresentable {
   func updateNSView(_ nsView: NSScrollView, context: Context) {
     guard let textView = nsView.documentView as? NSTextView else { return }
     bridge.textView = textView
-    // Only reload content on a real note switch — never on every keystroke.
+    // Reload content on note switch only — never on every keystroke.
     if context.coordinator.loadedNoteID != noteID {
       textView.textStorage?.setAttributedString(text)
       (textView as? ListTextView)?.capImages()
@@ -442,19 +818,16 @@ struct RichTextEditor: NSViewRepresentable {
   final class Coordinator: NSObject, NSTextViewDelegate {
     weak var textView: NSTextView?
     var loadedNoteID: Note.ID?
-    // Dedicated undo manager per coordinator (so it dies with the SwiftUI view
-    // when `.id(note.id)` recreates it). Otherwise the window's shared undo
-    // manager keeps stale targets after the old NSTextView is deallocated and
-    // Cmd+Z crashes with EXC_BAD_ACCESS in NSUndoStack popAndInvoke.
+    // Per-coordinator undo manager so it dies with the SwiftUI view when
+    // `.id(note.id)` recreates it. The shared window undo manager would
+    // otherwise hold stale NSTextView targets → EXC_BAD_ACCESS on Cmd+Z.
     let editorUndoManager = UndoManager()
 
     func undoManager(for view: NSTextView) -> UndoManager? { editorUndoManager }
 
     func textDidChange(_ notification: Notification) {
       guard let textView = notification.object as? NSTextView else { return }
-      // Capture the note the text view currently shows so the controller can
-      // refuse the change if the selection has moved on (otherwise the old
-      // note's text would be written into the newly-selected note).
+      // `expected` lets the controller reject a stray change after selection switch.
       let expected = loadedNoteID
       MainActor.assumeIsolated {
         NotesController.shared.editorContentChanged(textView.attributedString(), expectedNoteID: expected)
@@ -463,13 +836,52 @@ struct RichTextEditor: NSViewRepresentable {
   }
 }
 
-// Simple window that shows an attachment's image at (capped) full size.
+/// Inline popover shown on image click: delete + percentage size buttons.
+fileprivate struct ImageOptionsView: View {
+  let onDelete: () -> Void
+  let onResize: (Int) -> Void
+
+  var body: some View {
+    HStack(spacing: 6) {
+      Button(action: onDelete) {
+        Image(systemName: "trash")
+          .foregroundStyle(.red)
+          .frame(width: 30, height: 22)
+      }
+      .buttonStyle(.bordered)
+      .controlSize(.small)
+      .help("Delete image")
+
+      Divider().frame(height: 18)
+
+      ForEach([10, 25, 50, 75, 100], id: \.self) { percent in
+        Button { onResize(percent) } label: {
+          Text("\(percent)%")
+            .font(.system(size: 11, weight: .medium))
+            .frame(width: 36, height: 22)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .help("Resize to \(percent)% of original")
+      }
+    }
+    .padding(.horizontal, 8)
+    .padding(.vertical, 6)
+  }
+}
+
+/// Floating window that shows an image attachment at full natural size
+/// (capped to 80% of the visible screen).
 @MainActor
 enum ImagePreviewWindow {
   private static var window: NSWindow?
 
   static func show(attachment: NSTextAttachment) {
     guard let image = imageFromAttachment(attachment) else { return }
+    showImage(image)
+  }
+
+  static func showImage(_ image: NSImage) {
     let maxSize = (NSScreen.main?.visibleFrame.size).map { NSSize(width: $0.width * 0.8, height: $0.height * 0.8) }
       ?? NSSize(width: 1000, height: 800)
     var size = image.size

@@ -15,6 +15,9 @@ enum PopupState {
   case opening
 }
 
+/// Clipboard popup window state. Owns the open/close lifecycle, the keyboard
+/// event monitor (for ⌘⇧C cycle behaviour and hover-during-scroll suppression),
+/// and triggers per-decorator image release on close to keep RAM bounded.
 @Observable
 class Popup {
   static let verticalSeparatorPadding = 6.0
@@ -72,23 +75,34 @@ class Popup {
     NSEvent.removeMonitor(eventsMonitor)
   }
 
+  /// Opens the floating panel at the given height + screen position.
   func open(height: CGFloat, at popupPosition: PopupPosition = Defaults[.popupPosition]) {
     AppState.shared.appDelegate?.panel.open(height: height, at: popupPosition)
   }
 
+  /// Resets the cycle/toggle state machine and re-enables the popup hotkey.
   func reset() {
     state = .toggle
     KeyboardShortcuts.enable(.popup)
   }
 
+  /// Closes the panel and releases every decorator's decoded NSImages.
   func close() {
     AppState.shared.appDelegate?.panel.close()  // close() calls reset
+    // Release decoded NSImages so RAM doesn't grow with every popup session.
+    Task { @MainActor in
+      for decorator in History.shared.all {
+        decorator.cleanupImages()
+      }
+    }
   }
 
+  /// True when the popup panel isn't on screen.
   func isClosed() -> Bool {
     AppState.shared.appDelegate?.panel.isPresented != true
   }
 
+  /// Clamps `newHeight` to the minimum (with preview pane) and user-configured maximum.
   func preferredHeight(for newHeight: CGFloat) -> CGFloat {
     var height = newHeight
 
@@ -107,6 +121,7 @@ class Popup {
     return height
   }
 
+  /// Animates the floating panel to fit the measured content height.
   func resize(height: CGFloat) {
     // `height` is the full scrollable content (paste stack + pins + history +
     // footer); only the fixed search header is added on top.

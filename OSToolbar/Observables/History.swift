@@ -8,12 +8,17 @@ import Sauce
 import Settings
 import SwiftData
 
+/// In-memory facade over the clipboard history. Wraps each persisted HistoryItem
+/// in a HistoryItemDecorator for view consumption, dedups incoming copies, enforces
+/// the max history size, drives selection / pinning / paste-stack flows.
 @Observable
 class History: ItemsContainer { // swiftlint:disable:this type_body_length
   static let shared = History()
   let logger = Logger(label: "com.ostoolbar.app")
 
+  /// Currently visible items (post-search filter).
   var items: [HistoryItemDecorator] = []
+  /// Multi-select paste-stack (currently a no-op feature; kept for future use).
   var pasteStack: PasteStack?
 
   var pinnedItems: [HistoryItemDecorator] { items.filter(\.isPinned) }
@@ -101,12 +106,40 @@ class History: ItemsContainer { // swiftlint:disable:this type_body_length
     }
   }
 
+  /// Hard cap on history size — clamps any previously-stored higher Defaults value.
+  private static let maxHistorySize = 75
+
+  /// Reads every persisted HistoryItem from SwiftData at app startup, wraps each
+  /// in a decorator, clamps the size cap, and wipes any OCR-leftover titles.
   @MainActor
   func load() async throws {
+    if Defaults[.size] > Self.maxHistorySize {
+      Defaults[.size] = Self.maxHistorySize
+    }
+
     let descriptor = FetchDescriptor<HistoryItem>()
     let results = try Storage.shared.context.fetch(descriptor)
     all = sorter.sort(results).map { HistoryItemDecorator($0) }
     items = all
+
+    // One-shot wipe of OCR'd titles left by the old Vision codepath. Type-only
+    // check so we don't fault blobs.
+    let imageTypeValues: Set<String> = [
+      NSPasteboard.PasteboardType.tiff.rawValue,
+      NSPasteboard.PasteboardType.png.rawValue,
+      NSPasteboard.PasteboardType.jpeg.rawValue,
+      NSPasteboard.PasteboardType.heic.rawValue
+    ]
+    for decorator in all where !decorator.item.title.isEmpty {
+      let hasImage = decorator.item.contents.contains { imageTypeValues.contains($0.type) }
+      let hasText = decorator.item.contents.contains {
+        $0.type == NSPasteboard.PasteboardType.string.rawValue
+      }
+      if hasImage && !hasText {
+        decorator.item.title = ""
+        decorator.title = ""
+      }
+    }
 
     limitHistorySize(to: Defaults[.size])
 
@@ -117,6 +150,7 @@ class History: ItemsContainer { // swiftlint:disable:this type_body_length
     }
   }
 
+  /// Evicts the oldest unpinned items until the history fits the cap.
   @MainActor
   private func limitHistorySize(to maxSize: Int) {
     let unpinned = all.filter(\.isUnpinned)
@@ -125,14 +159,18 @@ class History: ItemsContainer { // swiftlint:disable:this type_body_length
     }
   }
 
+  /// Inserts a freshly-built HistoryItem into the SwiftData context.
+  /// Persistence is left to autosave; explicit save() blocked main on big blobs.
   @MainActor
   func insertIntoStorage(_ item: HistoryItem) throws {
     logger.info("Inserting item with id '\(item.title)'")
     Storage.shared.context.insert(item)
-    Storage.shared.context.processPendingChanges()
-    try? Storage.shared.context.save()
+    // Persistence is left to SwiftData autosave — explicit save() blocked main
+    // while a multi-MB blob was written, freezing the popup after each copy.
   }
 
+  /// Inserts a new clip into the in-memory list. Handles dedup (replaces matching
+  /// existing item, bumps numberOfCopies), pin preservation, and sort placement.
   @discardableResult
   @MainActor
   func add(_ item: HistoryItem) -> HistoryItemDecorator {
@@ -209,6 +247,7 @@ class History: ItemsContainer { // swiftlint:disable:this type_body_length
     logger.info("\(msg) After: \(dataCounts())")
   }
 
+  /// Removes all unpinned items from history + storage. Pinned items survive.
   @MainActor
   func clear() {
     withLogging("Clearing history") {
@@ -242,6 +281,7 @@ class History: ItemsContainer { // swiftlint:disable:this type_body_length
     }
   }
 
+  /// Removes EVERY item (pinned included) from history + storage.
   @MainActor
   func clearAll() {
     withLogging("Clearing all history") {
@@ -264,6 +304,7 @@ class History: ItemsContainer { // swiftlint:disable:this type_body_length
     }
   }
 
+  /// Removes a single item from the list + storage; releases its images.
   @MainActor
   func delete(_ item: HistoryItemDecorator?) {
     guard let item else { return }
@@ -271,8 +312,8 @@ class History: ItemsContainer { // swiftlint:disable:this type_body_length
     cleanup(item)
     withLogging("Removing history item") {
       Storage.shared.context.delete(item.item)
-      Storage.shared.context.processPendingChanges()
-      try? Storage.shared.context.save()
+      // Persistence via autosave — explicit save() blocked the copy path
+      // when limitHistorySize evicted an item.
     }
 
     all.removeAll { $0 == item }
@@ -296,6 +337,8 @@ class History: ItemsContainer { // swiftlint:disable:this type_body_length
       .subtracting([.capsLock, .numericPad, .function]) ?? []
   }
 
+  /// User-triggered selection from the popup. Copies the item's contents back to
+  /// the system pasteboard (and respects ⌘/⌥/⇧ modifiers for plain-text variants).
   @MainActor
   func select(_ item: HistoryItemDecorator?) {
     guard let item else {
@@ -421,6 +464,7 @@ class History: ItemsContainer { // swiftlint:disable:this type_body_length
     pasteStack = nil
   }
 
+  /// Flips the item's pinned state and re-positions it in the sorted list.
   @MainActor
   func togglePin(_ item: HistoryItemDecorator?) {
     guard let item else { return }
@@ -445,17 +489,14 @@ class History: ItemsContainer { // swiftlint:disable:this type_body_length
 
   @MainActor
   private func findSimilarItem(_ item: HistoryItem) -> HistoryItem? {
-    let descriptor = FetchDescriptor<HistoryItem>()
-    if let all = try? Storage.shared.context.fetch(descriptor) {
-      let duplicates = all.filter({ $0 == item || $0.supersedes(item) })
-      if duplicates.count > 1 {
-        return duplicates.first(where: { $0 != item })
-      } else {
-        return isModified(item)
-      }
+    // Never fetch from SwiftData here — would fault every blob into the
+    // context (retained for the session) and grow RSS on every copy.
+    let inMemoryItems = all.map(\.item)
+    let duplicates = inMemoryItems.filter({ $0 == item || $0.supersedes(item) })
+    if duplicates.count > 1 {
+      return duplicates.first(where: { $0 != item })
     }
-
-    return item
+    return isModified(item)
   }
 
   private func isModified(_ item: HistoryItem) -> HistoryItem? {

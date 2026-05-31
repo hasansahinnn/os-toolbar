@@ -68,15 +68,15 @@ struct ListItemView<Title: View, ID: Hashable>: View {
           .padding(.vertical, 5)
       }
 
+      // Image + title side-by-side; image-only clips have empty title.
       if let image {
         Image(nsImage: image)
           .accessibilityIdentifier("copy-history-item")
           .padding(.trailing, 5)
           .padding(.vertical, 5)
-      } else {
-        ListItemTitleView(attributedTitle: attributedTitle, title: title)
-          .padding(.trailing, 5)
       }
+      ListItemTitleView(attributedTitle: attributedTitle, title: title)
+        .padding(.trailing, 5)
 
       Spacer()
 

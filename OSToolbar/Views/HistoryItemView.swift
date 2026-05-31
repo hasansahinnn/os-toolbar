@@ -46,9 +46,8 @@ struct HistoryItemView: View {
     ) {
       Text(verbatim: item.title)
     }
-    .onAppear {
-      item.ensureThumbnailImage()
-    }
+    .onAppear { item.ensureThumbnailImage() }
+    .onDisappear { item.releaseThumbnail() }
     .onTapGesture {
       if NSEvent.modifierFlags.contains(.command) && appState.multiSelectionEnabled {
         appState.navigator.addToSelection(item: item)

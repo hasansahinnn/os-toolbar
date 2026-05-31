@@ -17,6 +17,10 @@ extension NSPasteboard.PasteboardType: Defaults.Serializable {
   // Marks that copy was made from this app.
   static let fromOSToolbar = NSPasteboard.PasteboardType(rawValue: "com.ostoolbar.app")
 
+  // Small JPEG thumbnail stored beside the original — list renders only this.
+  // Marked transient so it never lands on paste-back.
+  static let osToolbarThumbnail = NSPasteboard.PasteboardType(rawValue: "com.ostoolbar.app.thumbnail")
+
   // Types that indicate Microsoft Word bookmarks (links).
   static let microsoftObjectLink = NSPasteboard.PasteboardType(rawValue: "com.microsoft.ObjectLink")
   static let microsoftLinkSource = NSPasteboard.PasteboardType(rawValue: "com.microsoft.Link-Source")

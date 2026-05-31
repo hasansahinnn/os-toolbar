@@ -65,14 +65,24 @@ You can verify this yourself — search the source: there are no `URLSession`,
 Don't take our word for it — verify it yourself with free tools:
 
 ### Scan with VirusTotal (free, 70+ antivirus engines)
-This release has already been scanned — **0 / 61 security vendors flagged it** (clean):
 
-**▶ [VirusTotal report for OSToolbar-v1.0.0.dmg](https://www.virustotal.com/gui/file/cddae352172b3521be31ea0105722c3d908888c00fe3bbe68fcccf31aa16ddb0)**
+The release DMG has been scanned by 70+ antivirus engines:
 
-`SHA-256: cddae352172b3521be31ea0105722c3d908888c00fe3bbe68fcccf31aa16ddb0`
+**▶ [VirusTotal report for OSToolbar-v1.0.0.dmg](https://www.virustotal.com/gui/file/0fd40cce8d506978bc5a24f824da10117d458d17b0c77c7484185ea90c573f00)**
 
-You can also re-upload it yourself at [virustotal.com](https://www.virustotal.com/gui/home/upload)
-and compare the hash — it should match exactly.
+`SHA-256 (DMG): 0fd40cce8d506978bc5a24f824da10117d458d17b0c77c7484185ea90c573f00`
+`SHA-256 (ZIP): f21878ff01f847a828020a1031c7ffeeea6a4322ba675de87c9a6aed23911a33`
+
+Verify the file you downloaded:
+
+```bash
+shasum -a 256 OSToolbar-v1.0.0.dmg
+# expected: 0fd40cce8d506978bc5a24f824da10117d458d17b0c77c7484185ea90c573f00
+```
+
+If the hash matches, you have exactly the file we built. You can also
+re-upload it at [virustotal.com](https://www.virustotal.com/gui/home/upload)
+to scan it fresh against the latest engine definitions.
 
 ---
 
@@ -80,10 +90,26 @@ and compare the hash — it should match exactly.
 
 1. Download the latest DMG (or ZIP) from the [**Releases page**](https://github.com/hasansahinnn/os-toolbar/releases/latest).
 2. Open the DMG and drag **OSToolbar** onto **Applications**.
-3. First launch: **right-click the app → Open** (the build is signed with a
-  self-signed certificate, not Apple-notarized, so Gatekeeper asks once).
+3. **First launch — handle the Gatekeeper warning.** The build is signed with a
+   self-signed certificate, not Apple-notarized, so macOS will show
+   *"OSToolbar can't be opened because it is from an unidentified developer"*
+   or *"Apple could not verify OSToolbar is free of malware"*. To bypass it once:
+
+   **Option A — right-click → Open** *(works on macOS 14 and earlier)*
+   - In Finder, **right-click (or Control-click)** OSToolbar.app → **Open**
+   - Click **Open** in the dialog. macOS remembers your choice; future launches just work.
+
+   **Option B — System Settings → Open Anyway** *(macOS 15 Sequoia and later)*
+   - Double-click OSToolbar normally. macOS blocks it.
+   - Open **System Settings → Privacy & Security**, scroll to the **Security** section.
+   - You'll see *"OSToolbar was blocked from use…"* → click **Open Anyway**.
+   - Confirm with your password / Touch ID. Done.
+
+   Want to verify the binary first? See the [Verify it's safe](#-verify-its-safe-free-public-tools)
+   section above — the DMG's SHA-256 and a clean VirusTotal report are published with every release.
+
 4. When you first take a screenshot, macOS asks for **Screen Recording**
-  permission — grant it (System Settings → Privacy & Security → Screen Recording),
+   permission — grant it (System Settings → Privacy & Security → Screen Recording),
    then **quit and reopen** the app once.
 
 ---

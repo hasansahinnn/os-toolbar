@@ -2,7 +2,8 @@ import AppKit
 import Foundation
 import SwiftUI
 
-// Color flag a note can be tagged with. Stored by `rawValue` in meta.json.
+/// Color flag a note can be tagged with. Stored by `rawValue` in meta.json
+/// and used to drive the by-color grouping in the notes list.
 enum NoteColor: String, CaseIterable, Codable, Identifiable {
   case none
   case red
@@ -44,8 +45,9 @@ enum NoteColor: String, CaseIterable, Codable, Identifiable {
   }
 }
 
-// A single alarm attached to a note. Persisted in meta.json and scheduled with
-// UNUserNotificationCenter. `identifier` doubles as the notification request id.
+/// A single alarm attached to a note. Persisted in meta.json and scheduled via
+/// the in-app NoteAlarmManager (not UNUserNotificationCenter — those don't fire
+/// reliably for self-signed menubar apps).
 struct NoteAlarm: Codable, Identifiable, Hashable {
   var id: UUID = UUID()
   var date: Date
@@ -57,8 +59,8 @@ struct NoteAlarm: Codable, Identifiable, Hashable {
   var isPending: Bool { !fired && date > Date() }
 }
 
-// Codable sidecar describing a note. The rich text itself lives next to it in
-// `content.rtfd`; this file holds everything else.
+/// Codable sidecar describing a note (serialized as `meta.json`).
+/// The rich text body lives separately as `content.rtfd`.
 struct NoteMeta: Codable {
   var id: UUID
   var title: String
@@ -109,8 +111,9 @@ struct NoteMeta: Codable {
   }
 }
 
-// A note backed by a directory on disk: <folder>/<name>/ containing
-// `content.rtfd` (rich text + images) and `meta.json` (this metadata).
+/// In-memory wrapper around a note's on-disk directory (`<folder>/<name>/`
+/// containing `content.rtfd` + `meta.json`). The attributed content is loaded
+/// lazily when the editor selects the note and released on deselect.
 @Observable
 final class Note: Identifiable {
   let id: UUID
@@ -164,8 +167,8 @@ final class Note: Identifiable {
   }
 }
 
-// How notes are ordered in the list. `manual` preserves the user's drag-drop
-// order (persisted in `.order.json`); the others sort live by a date/title.
+/// Sort mode for the notes list. `manual` preserves the user's drag order
+/// (persisted in `.order.json`); the others sort live by date/title.
 enum NoteSortMode: String, CaseIterable, Identifiable, Codable {
   case manual, edited, created, title
 
@@ -181,7 +184,7 @@ enum NoteSortMode: String, CaseIterable, Identifiable, Codable {
   }
 }
 
-// A folder shown in the sidebar, backed by a real directory on disk.
+/// Sidebar folder, backed by a real directory on disk.
 @Observable
 final class NoteFolder: Identifiable {
   let id: URL

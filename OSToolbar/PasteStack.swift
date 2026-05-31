@@ -1,32 +1,13 @@
 import Foundation
 import AppKit
 
+/// Multi-select paste queue. Currently effectively disabled — see initializeIfNeeded.
 @Observable
 class PasteStack: Identifiable, Hashable {
   private static var listener: Any?
 
-  static func initializeIfNeeded() {
-    guard listener == nil else { return }
-    Accessibility.check()
-
-    var pasteDown: Bool = false
-    listener = NSEvent.addGlobalMonitorForEvents(matching: [.keyUp, .keyDown]) { event in
-      switch event.type {
-      case .keyDown:
-        if event.keyCode == KeyChord.pasteKey.QWERTYKeyCode
-           && event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command] {
-          pasteDown = true
-        }
-      case .keyUp:
-        if pasteDown && event.keyCode == KeyChord.pasteKey.QWERTYKeyCode {
-          pasteDown = false
-          AppState.shared.history.handlePasteStack()
-        }
-      default:
-        break
-      }
-    }
-  }
+  /// Intentional no-op: global ⌘V monitoring would need Accessibility permission.
+  static func initializeIfNeeded() {}
 
   var id: UUID = UUID()
   var items: [HistoryItemDecorator] = []

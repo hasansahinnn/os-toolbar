@@ -9,6 +9,9 @@ extension DateFormatter {
   }()
 }
 
+/// Top-level Notes window UI. Three-column layout: folders sidebar (with
+/// alarms section + global search), notes list (filtered/grouped/sorted),
+/// editor with toolbar (bold/italic/lists/insert image/table/clear-formatting).
 struct NotesRootView: View {
   @Bindable private var controller = NotesController.shared
   @State private var bridge = NoteEditorBridge()
@@ -33,6 +36,16 @@ struct NotesRootView: View {
   // hold and drag the row to reposition. Disables tap-to-select while active.
   @State private var reorderFoldersMode = false
   @State private var reorderNotesMode = false
+
+  // Clear-formatting popover (eraser icon in the editor toolbar).
+  @State private var showClearFormatting = false
+  @State private var clearBackground = true
+  @State private var clearForeground = false
+  @State private var clearUnderline = true
+  @State private var clearStrikethrough = true
+  @State private var clearFontTraits = false
+  @State private var clearFontFamilyAndSize = false
+  @State private var clearLinks = false
 
   private var folderSelection: Binding<NoteFolder.ID?> {
     Binding(
@@ -582,6 +595,8 @@ struct NotesRootView: View {
         toolButton("link") { bridge.insertLink() }
         toolButton("photo") { bridge.insertImage() }
       }
+      Divider().frame(height: 16)
+      clearFormattingButton
       Spacer()
       flagMenu(note)
       AlarmButton(note: note)
@@ -595,6 +610,97 @@ struct NotesRootView: View {
       Image(systemName: symbol).frame(width: 22, height: 20)
     }
     .buttonStyle(.borderless)
+  }
+
+  // Eraser → popover with "Clear all" + per-attribute toggles.
+  private var clearFormattingButton: some View {
+    Button {
+      showClearFormatting.toggle()
+    } label: {
+      Image(systemName: "eraser").frame(width: 22, height: 20)
+    }
+    .buttonStyle(.borderless)
+    .help("Clear formatting")
+    .popover(isPresented: $showClearFormatting, arrowEdge: .bottom) {
+      clearFormattingPopover
+    }
+  }
+
+  private var clearFormattingPopover: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text("Clear formatting")
+        .font(.headline)
+      Text("Strip styles from the selection — or the whole note if nothing is selected. Useful for cleaning up pastes from blogs / Google Docs.")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+
+      Button {
+        bridge.clearAllFormatting()
+        showClearFormatting = false
+      } label: {
+        Label("Clear all formatting", systemImage: "eraser.line.dashed")
+          .frame(maxWidth: .infinity)
+      }
+      .buttonStyle(.borderedProminent)
+      .controlSize(.regular)
+      .help("Reset everything to plain text (images stay)")
+
+      HStack(spacing: 6) {
+        VStack { Divider() }
+        Text("or pick specific styles")
+          .font(.caption2)
+          .foregroundStyle(.secondary)
+        VStack { Divider() }
+      }
+
+      // Pre-checked = present in selection. User may add/remove freely.
+      Toggle("Background color (highlights)", isOn: $clearBackground)
+      Toggle("Text color", isOn: $clearForeground)
+      Toggle("Underline", isOn: $clearUnderline)
+      Toggle("Strikethrough", isOn: $clearStrikethrough)
+      Toggle("Bold / italic", isOn: $clearFontTraits)
+      Toggle("Font family + size (reset to default)", isOn: $clearFontFamilyAndSize)
+      Toggle("Links", isOn: $clearLinks)
+
+      HStack {
+        Spacer()
+        Button("Cancel") { showClearFormatting = false }
+          .keyboardShortcut(.cancelAction)
+        Button("Clear selected") {
+          bridge.clearFormatting(
+            background: clearBackground,
+            foreground: clearForeground,
+            underline: clearUnderline,
+            strikethrough: clearStrikethrough,
+            fontTraits: clearFontTraits,
+            fontFamilyAndSize: clearFontFamilyAndSize,
+            links: clearLinks
+          )
+          showClearFormatting = false
+        }
+        .keyboardShortcut(.defaultAction)
+        .disabled(!anyToggleOn)
+      }
+    }
+    .padding(16)
+    .frame(width: 340)
+    .onAppear {
+      // Re-detect each open so toggles track the active selection.
+      let present = bridge.detectStylesInSelection()
+      clearBackground = present.background
+      clearForeground = present.foreground
+      clearUnderline = present.underline
+      clearStrikethrough = present.strikethrough
+      clearFontTraits = present.fontTraits
+      clearFontFamilyAndSize = present.fontFamilyAndSize
+      clearLinks = present.links
+    }
+  }
+
+  private var anyToggleOn: Bool {
+    clearBackground || clearForeground || clearUnderline || clearStrikethrough
+      || clearFontTraits || clearFontFamilyAndSize || clearLinks
   }
 
   private func flagMenu(_ note: Note) -> some View {

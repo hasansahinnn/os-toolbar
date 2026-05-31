@@ -4,20 +4,23 @@ import Foundation
 import ImageIO
 import Observation
 import Sauce
+import UniformTypeIdentifiers
 
-// Lets us hand a CGImage back from a detached (background) task to the main actor.
-// CGImage is effectively immutable/thread-safe; the box just satisfies Sendable.
+// Sendable wrapper for handing a CGImage across actor boundaries.
 private struct SendableCGImage: @unchecked Sendable { let image: CGImage }
 
+/// View-model wrapper around a persisted HistoryItem. Holds decoded NSImages
+/// (thumbnail + preview), search-highlight state, keyboard shortcut bindings,
+/// and the cached application icon for the source app.
 @Observable
 class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
   static func == (lhs: HistoryItemDecorator, rhs: HistoryItemDecorator) -> Bool {
     return lhs.id == rhs.id
   }
 
-  // The preview panel is small, so generating a full-screen-resolution image was
-  // wasteful and slow (caused hangs when moving between image items). Cap it.
-  static var previewImageSize: NSSize { NSSize(width: 1100, height: 900) }
+  /// Preview-pane cap — was 1100×900 (~4 MB decoded), now 600×400 (~1 MB).
+  static var previewImageSize: NSSize { NSSize(width: 600, height: 400) }
+  /// List-row thumbnail cap — width fixed, height follows the user-configurable max.
   static var thumbnailImageSize: NSSize { NSSize(width: 340, height: Defaults[.imageMaxHeight]) }
 
   let id = UUID()
@@ -46,7 +49,7 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
     return url.deletingPathExtension().lastPathComponent
   }
 
-  // Cheap check — don't decode the image just to know it's an image.
+  // Not cached: caching image bytes per decorator pinned GB of RAM.
   var hasImage: Bool { item.imageData != nil }
 
   var previewImageGenerationTask: Task<Void, Never>?
@@ -80,23 +83,51 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
     synchronizeItemTitle()
   }
 
+  /// Kicks off thumbnail load for the list row (no-op if already loaded).
+  /// Fast path uses pre-generated JPEG; backfill path reads + encodes original.
   @MainActor
   func ensureThumbnailImage() {
-    guard thumbnailImage == nil, thumbnailImageGenerationTask == nil,
-          let data = item.imageData else {
-      return
-    }
+    guard thumbnailImage == nil, thumbnailImageGenerationTask == nil else { return }
     let target = Self.thumbnailImageSize
     let maxPixel = max(target.width, target.height) * 2
+
+    // Fast path: pre-generated JPEG already attached.
+    if let data = item.thumbnailImageData {
+      thumbnailImageGenerationTask = Task.detached(priority: .utility) { [weak self] in
+        guard let cgImage = Self.downsample(data, maxPixelSize: maxPixel) else { return }
+        let boxed = SendableCGImage(image: cgImage)
+        await MainActor.run {
+          self?.thumbnailImage = NSImage(cgImage: boxed.image, size: Self.fittedSize(boxed.image, within: target))
+        }
+      }
+      return
+    }
+
+    // Backfill: legacy items (or pre-attach race) — generate from original.
+    // Brief MainActor hop for the blob fault, encode + decode off-main.
+    guard item.hasOriginalImageBytes else { return }
+    let weakItem = item
     thumbnailImageGenerationTask = Task.detached(priority: .utility) { [weak self] in
-      guard let cgImage = Self.downsample(data, maxPixelSize: maxPixel) else { return }
+      let originalBytes: Data? = await MainActor.run { weakItem.imageData }
+      guard let bytes = originalBytes else { return }
+      guard let jpeg = Self.downsampleToJPEG(bytes, maxPixel: 680, quality: 0.6) else { return }
+      guard let cgImage = Self.downsample(jpeg, maxPixelSize: maxPixel) else { return }
       let boxed = SendableCGImage(image: cgImage)
       await MainActor.run {
-        self?.thumbnailImage = NSImage(cgImage: boxed.image, size: Self.fittedSize(boxed.image, within: target))
+        guard let self else { return }
+        self.thumbnailImage = NSImage(cgImage: boxed.image, size: Self.fittedSize(boxed.image, within: target))
+        // Persist for fast path next time.
+        let thumb = HistoryItemContent(
+          type: NSPasteboard.PasteboardType.osToolbarThumbnail.rawValue,
+          value: jpeg
+        )
+        thumb.item = weakItem
+        weakItem.contents.append(thumb)
       }
     }
   }
 
+  /// Kicks off full-resolution preview decode for the preview pane.
   @MainActor
   func ensurePreviewImage() {
     guard previewImage == nil, previewImageGenerationTask == nil,
@@ -114,6 +145,7 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
     }
   }
 
+  /// Awaits the preview image — kicks generation if not yet started.
   @MainActor
   func asyncGetPreviewImage() async -> NSImage? {
     if let image = previewImage {
@@ -124,6 +156,16 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
     return previewImage
   }
 
+  // Called on .onDisappear — bounds thumbnail RAM to visible rows.
+  @MainActor
+  func releaseThumbnail() {
+    thumbnailImageGenerationTask?.cancel()
+    thumbnailImageGenerationTask = nil
+    thumbnailImage?.recache()
+    thumbnailImage = nil
+  }
+
+  /// Cancels in-flight image tasks and releases both thumbnail + preview NSImages.
   @MainActor
   func cleanupImages() {
     thumbnailImageGenerationTask?.cancel()
@@ -134,9 +176,23 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
     previewImage = nil
   }
 
-  // Decode the image data directly at the target size via ImageIO — this never
-  // fully decodes huge originals, so it's fast and light, and safe off the main
-  // thread. Runs on a background task; the result is handed back via SendableCGImage.
+  // Original bytes → small JPEG thumbnail. Used by the backfill path.
+  nonisolated fileprivate static func downsampleToJPEG(_ data: Data, maxPixel: CGFloat, quality: CGFloat) -> Data? {
+    guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+    let opts: [CFString: Any] = [
+      kCGImageSourceCreateThumbnailFromImageAlways: true,
+      kCGImageSourceCreateThumbnailWithTransform: true,
+      kCGImageSourceShouldCacheImmediately: true,
+      kCGImageSourceThumbnailMaxPixelSize: maxPixel
+    ]
+    guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, opts as CFDictionary) else { return nil }
+    let out = NSMutableData()
+    guard let dest = CGImageDestinationCreateWithData(out, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
+    CGImageDestinationAddImage(dest, cgImage, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
+    return CGImageDestinationFinalize(dest) ? (out as Data) : nil
+  }
+
+  // ImageIO thumbnail decode at target size — never fully decodes huge originals.
   nonisolated private static func downsample(_ data: Data, maxPixelSize: CGFloat) -> CGImage? {
     guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
     let options: [CFString: Any] = [
@@ -148,8 +204,7 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
     return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
   }
 
-  // Point size for an image that aspect-fits within `box` (never upscaled), so a
-  // wide image stays short in the list rather than ballooning in height.
+  // Aspect-fit within `box`, never upscaled.
   nonisolated private static func fittedSize(_ image: CGImage, within box: NSSize) -> NSSize {
     let pixelWidth = CGFloat(image.width)
     let pixelHeight = CGFloat(image.height)
@@ -157,12 +212,14 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
     return NSSize(width: pixelWidth * scale, height: pixelHeight * scale)
   }
 
+  /// Loads both thumbnail and preview (called when user focuses the item).
   @MainActor
   func sizeImages() {
     ensureThumbnailImage()
     ensurePreviewImage()
   }
 
+  /// Applies search-match highlighting (bold/italic/underline/bg) to the title.
   func highlight(_ query: String, _ ranges: [Range<String.Index>]) {
     guard !query.isEmpty, !title.isEmpty else {
       attributedTitle = nil
@@ -190,6 +247,7 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
     attributedTitle = attributedString
   }
 
+  /// Toggles the pinned state — assigns a random unused pin character if pinning.
   @MainActor
   func togglePin() {
     if item.pin != nil {

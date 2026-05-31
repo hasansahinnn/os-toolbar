@@ -7,7 +7,11 @@ enum ScreenshotError: Error {
   case displayNotFound
 }
 
-// Resolves where screenshots are saved and how to write them, honoring the sandbox.
+// Sendable wrapper for handing a CGImage across actor boundaries.
+private struct SendableCGImageBox: @unchecked Sendable { let image: CGImage }
+
+/// Sandbox-aware resolver + writer for the screenshot output folder.
+/// Handles the security-scoped bookmark when the user picks a custom folder.
 enum ScreenshotPreferences {
   static var defaultDirectory: URL {
     let base = FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask).first
@@ -15,8 +19,7 @@ enum ScreenshotPreferences {
     return base.appendingPathComponent("OSToolBar ScreenShot", isDirectory: true)
   }
 
-  // Resolved save directory. Returns the user-chosen folder (via security-scoped
-  // bookmark) when set, otherwise the default ~/Pictures/OSToolBar ScreenShot.
+  // User-chosen folder (security-scoped bookmark) or the default.
   static var saveDirectory: URL {
     if let data = Defaults[.screenshotDirectoryBookmark],
        let url = resolveBookmark(data) {
@@ -29,6 +32,8 @@ enum ScreenshotPreferences {
     saveDirectory.path(percentEncoded: false)
   }
 
+  /// Opens an NSOpenPanel for the user to pick a new output folder; persists
+  /// the result as a security-scoped bookmark.
   static func chooseDirectory() {
     let panel = NSOpenPanel()
     panel.canChooseDirectories = true
@@ -46,19 +51,19 @@ enum ScreenshotPreferences {
     }
   }
 
-  // Open the screenshot folder itself (show its contents), not its parent.
+  /// Opens the screenshot folder in Finder.
   static func openInFinder() {
     let dir = saveDirectory
     ensureExists(dir)
     NSWorkspace.shared.open(dir)
   }
 
-  // Open the containing folder with a specific file selected.
+  /// Opens Finder with `url` selected in its parent folder.
   static func revealInFinder(_ url: URL) {
     NSWorkspace.shared.activateFileViewerSelecting([url])
   }
 
-  // Writes PNG data to the default directory. Returns the saved file URL.
+  /// Writes PNG bytes to the configured screenshot folder. Returns the saved URL.
   @discardableResult
   static func saveToDefaultDirectory(_ pngData: Data) -> URL? {
     let dir = saveDirectory
@@ -76,11 +81,10 @@ enum ScreenshotPreferences {
     }
   }
 
-  // Opens a Save panel for "Save As…". Returns the saved file URL.
+  /// Shows an NSSavePanel ("Save As…") and writes PNG bytes to the chosen URL.
   @discardableResult
   static func saveAs(_ pngData: Data) -> URL? {
-    // We're an accessory (menu-bar) app; make sure we're active so the
-    // panel comes to the front and can receive input.
+    // Menu-bar app must be active so the Save panel comes to the front.
     NSApp.activate(ignoringOtherApps: true)
     let panel = NSSavePanel()
     panel.level = .modalPanel
@@ -126,6 +130,9 @@ enum ScreenshotPreferences {
   }
 }
 
+/// Drives the screenshot feature. Two entry points: `capture()` for the
+/// interactive region-select + annotate flow, `captureFullScreen()` for the
+/// one-shot quick screenshot. Uses ScreenCaptureKit for the actual pixel grab.
 @MainActor
 final class ScreenshotController {
   static let shared = ScreenshotController()
@@ -134,6 +141,8 @@ final class ScreenshotController {
   private var thumbnailWindow: ScreenshotThumbnailWindow?
   private var isCapturing = false
 
+  /// Interactive capture: grabs the cursor's display, then opens the
+  /// region-select + annotation overlay. No-op if a capture is already running.
   func capture() {
     guard !isCapturing, overlayWindow == nil else { return }
 
@@ -162,8 +171,8 @@ final class ScreenshotController {
     }
   }
 
-  // Quick full-screen capture: grabs the whole display the cursor is on and saves
-  // it straight to the default folder (no region select, no editor).
+  /// Quick capture: grabs the full display under the cursor, saves to the
+  /// configured folder, shows a corner thumbnail. No editor, no region select.
   func captureFullScreen() {
     if !CGPreflightScreenCaptureAccess() {
       CGRequestScreenCaptureAccess()
@@ -180,16 +189,21 @@ final class ScreenshotController {
     Task { @MainActor in
       do {
         let image = try await Self.captureDisplay(displayID: displayID, scale: scale)
-        guard let png = Self.pngData(from: image) else { return }
-        let savedURL = ScreenshotPreferences.saveToDefaultDirectory(png)
-
-        // Small bottom-right preview: click it to reveal the file in Finder.
-        let nsImage = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
-        self.showThumbnail(nsImage, fileURL: savedURL, screen: screen)
-
-        // Optionally also open the folder right away.
-        if Defaults[.screenshotOpenFolderAfterCapture] {
-          ScreenshotPreferences.openInFinder()
+        // PNG encode + write off-main; hop back only to present the thumbnail.
+        let boxed = SendableCGImageBox(image: image)
+        Task.detached(priority: .userInitiated) {
+          guard let png = Self.pngData(from: boxed.image) else { return }
+          let savedURL = ScreenshotPreferences.saveToDefaultDirectory(png)
+          let nsImage = NSImage(
+            cgImage: boxed.image,
+            size: NSSize(width: boxed.image.width, height: boxed.image.height)
+          )
+          await MainActor.run {
+            self.showThumbnail(nsImage, fileURL: savedURL, screen: screen)
+            if Defaults[.screenshotOpenFolderAfterCapture] {
+              ScreenshotPreferences.openInFinder()
+            }
+          }
         }
       } catch {
         NSLog("OSToolbar: quick screenshot failed: \(error)")
@@ -208,7 +222,8 @@ final class ScreenshotController {
     window.present()
   }
 
-  private static func pngData(from cgImage: CGImage) -> Data? {
+  // nonisolated for the background PNG-encoding task.
+  nonisolated private static func pngData(from cgImage: CGImage) -> Data? {
     let rep = NSBitmapImageRep(cgImage: cgImage)
     return rep.representation(using: .png, properties: [:])
   }
