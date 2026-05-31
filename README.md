@@ -71,7 +71,7 @@ The release DMG has been scanned by 70+ antivirus engines:
 **▶ [VirusTotal report for OSToolbar-v1.0.0.dmg](https://www.virustotal.com/gui/file/0fd40cce8d506978bc5a24f824da10117d458d17b0c77c7484185ea90c573f00)**
 
 `SHA-256 (DMG): 0fd40cce8d506978bc5a24f824da10117d458d17b0c77c7484185ea90c573f00`
-`SHA-256 (ZIP): f21878ff01f847a828020a1031c7ffeeea6a4322ba675de87c9a6aed23911a33`
+`SHA-256 (ZIP): 10d86edb8fff398868f3d77bee95e9fe74f669ebf26258167ffa37581a96fa0a`
 
 Verify the file you downloaded:
 
