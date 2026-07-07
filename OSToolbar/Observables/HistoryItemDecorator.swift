@@ -166,10 +166,15 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
   }
 
   /// Cancels in-flight image tasks and releases both thumbnail + preview NSImages.
+  /// Task refs are nil'd too — otherwise `ensureThumbnailImage`'s guard sees a
+  /// non-nil (cancelled) task on the next open and refuses to regenerate,
+  /// which was making thumbnails disappear after Esc-then-reopen.
   @MainActor
   func cleanupImages() {
     thumbnailImageGenerationTask?.cancel()
+    thumbnailImageGenerationTask = nil
     previewImageGenerationTask?.cancel()
+    previewImageGenerationTask = nil
     thumbnailImage?.recache()
     previewImage?.recache()
     thumbnailImage = nil

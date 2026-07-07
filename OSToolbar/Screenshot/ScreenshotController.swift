@@ -140,6 +140,8 @@ final class ScreenshotController {
   private var overlayWindow: ScreenshotOverlayWindow?
   private var thumbnailWindow: ScreenshotThumbnailWindow?
   private var isCapturing = false
+  /// App that was frontmost before capture — focus is handed back on close.
+  private var prevFrontmostApp: NSRunningApplication?
 
   /// Interactive capture: grabs the cursor's display, then opens the
   /// region-select + annotation overlay. No-op if a capture is already running.
@@ -159,6 +161,11 @@ final class ScreenshotController {
 
     isCapturing = true
     let scale = screen.backingScaleFactor
+
+    // Remember who was frontmost so we can hand focus back on close.
+    prevFrontmostApp = NSWorkspace.shared.frontmostApplication.flatMap {
+      $0.bundleIdentifier == Bundle.main.bundleIdentifier ? nil : $0
+    }
 
     Task { @MainActor in
       do {
@@ -189,7 +196,6 @@ final class ScreenshotController {
     Task { @MainActor in
       do {
         let image = try await Self.captureDisplay(displayID: displayID, scale: scale)
-        // PNG encode + write off-main; hop back only to present the thumbnail.
         let boxed = SendableCGImageBox(image: image)
         Task.detached(priority: .userInitiated) {
           guard let png = Self.pngData(from: boxed.image) else { return }
@@ -236,9 +242,18 @@ final class ScreenshotController {
     ) { [weak self] in
       self?.overlayWindow = nil
       self?.isCapturing = false
+      self?.handBackFocus()
     }
     overlayWindow = window
     window.present()
+  }
+
+  /// Hands focus back to the app that was frontmost before the screenshot.
+  private func handBackFocus() {
+    if let prev = prevFrontmostApp {
+      prev.activate(options: [])
+      prevFrontmostApp = nil
+    }
   }
 
   private func presentPermissionAlert() {

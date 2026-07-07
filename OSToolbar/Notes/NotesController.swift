@@ -50,13 +50,41 @@ final class NotesController {
 
   // MARK: - Window
 
-  /// Shows the Notes window, creating its controller lazily.
+  /// Shows the Notes window, creating its controller lazily. The window comes
+  /// up immediately; folder + note metadata is refreshed from disk on a
+  /// background task so a cold filesystem cache (long-idle wake-up) can't
+  /// freeze the open for 10+ seconds.
   func openWindow() {
-    if windowController == nil {
+    let firstOpen = windowController == nil
+    if firstOpen {
       windowController = NotesWindowController()
     }
-    loadFolders()
     windowController?.show()
+    refreshFromDisk(initial: firstOpen)
+  }
+
+  /// Re-reads folders + selected folder's notes from disk on a background task,
+  /// then publishes to main. Used by openWindow so the window doesn't block.
+  private func refreshFromDisk(initial: Bool) {
+    Task.detached(priority: .userInitiated) { [weak self] in
+      let freshFolders = NotesStore.listFolders()
+      let selectedID = await MainActor.run { self?.selectedFolderID }
+      let targetFolder = freshFolders.first(where: { $0.id == selectedID }) ?? freshFolders.first
+      let freshNotes: [Note] = targetFolder.map { NotesStore.listNotes(in: $0) } ?? []
+
+      await MainActor.run {
+        guard let self else { return }
+        self.folders = freshFolders
+        if self.selectedFolderID == nil || !freshFolders.contains(where: { $0.id == self.selectedFolderID }) {
+          self.selectedFolderID = targetFolder?.id
+        }
+        self.notes = freshNotes
+        if initial, self.selectedNote == nil {
+          self.selectNote(freshNotes.first)
+        }
+      }
+      await MainActor.run { self?.refreshActiveAlarms() }
+    }
   }
 
   /// Opens the Notes window and navigates to the note at the given path
@@ -75,15 +103,23 @@ final class NotesController {
 
   // MARK: - Loading
 
-  /// Re-reads folders from disk and refreshes the alarms sidebar.
+  /// Re-reads folders OFF the main thread. Same rationale as `loadNotes` —
+  /// blocking on `NotesStore.listFolders()` freezes the UI when the notes
+  /// directory is on cold cache or an iCloud-synced path.
   func loadFolders() {
-    folders = NotesStore.listFolders()
-    if selectedFolder == nil {
-      selectFolder(folders.first)
-    } else {
-      loadNotes()
+    Task.detached(priority: .userInitiated) { [weak self] in
+      let fresh = NotesStore.listFolders()
+      await MainActor.run {
+        guard let self else { return }
+        self.folders = fresh
+        if self.selectedFolder == nil {
+          self.selectFolder(fresh.first)
+        } else {
+          self.loadNotes()
+        }
+        self.refreshActiveAlarms()
+      }
     }
-    refreshActiveAlarms()
   }
 
   // Pending-alarm scan across every folder (sidebar Alarms section).
@@ -110,13 +146,14 @@ final class NotesController {
   }
 
   /// Re-reads the notes belonging to the currently-selected folder.
+  /// Preview generation is skipped — only the title metadata is needed here.
   func loadNotes() {
     guard let folder = selectedFolder else {
       notes = []
       selectedNoteID = nil
       return
     }
-    notes = NotesStore.listNotes(in: folder)
+    notes = NotesStore.listNotes(in: folder, generateMissingPreviews: false)
     if selectedNote == nil {
       selectNote(notes.first)
     }
@@ -196,7 +233,6 @@ final class NotesController {
   /// the previous note's loaded attributed string, and lazy-loads the new one.
   func selectNote(_ note: Note?) {
     flushPendingSave()
-    // Drop the previous note's attributed cache so image-heavy notes don't pile up.
     if let previousID = selectedNoteID, previousID != note?.id {
       notes.first(where: { $0.id == previousID })?.attributed = nil
     }

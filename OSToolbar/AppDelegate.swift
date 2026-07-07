@@ -222,7 +222,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     _ = screenshotStatusItem
     _ = notesStatusItem
 
-    // Notes: make sure the on-disk folder exists and (re)schedule any alarms.
+    // Notes: migrate legacy ~/Documents/OSToolbarNotes to the new Library path
+    // (out of iCloud sync), then make sure the on-disk folder exists.
+    NotesStore.migrateLegacyRootIfNeeded()
     NotesStore.ensureRoot()
     if Defaults[.migrations]["2026-notes-curated-seed"] != true {
       // Replace the earlier generic demo folders with a tidy, curated set.
@@ -283,6 +285,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+    // The Dock icon only appears while the Notes window is open (because
+    // NotesWindowController switches the app to `.regular` activation).
+    // Clicking it should bring Notes forward — not toggle the clipboard popup,
+    // which lives on the menu-bar status item and confused users.
+    if let notesWindow = NSApp.windows.first(where: {
+      $0.identifier?.rawValue == "com.ostoolbar.app.notes"
+    }) {
+      notesWindow.makeKeyAndOrderFront(nil)
+      return true
+    }
     panel.toggle(height: AppState.shared.popup.height)
     return true
   }

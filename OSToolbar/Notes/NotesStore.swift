@@ -16,7 +16,18 @@ enum NotesStore {
     return FileManager.default.homeDirectoryForCurrentUser
   }
 
+  /// New default lives in Library/Application Support — NEVER touched by
+  /// iCloud Drive Documents sync, so reads are always local and instant.
   static var defaultRoot: URL {
+    realHome
+      .appendingPathComponent("Library", isDirectory: true)
+      .appendingPathComponent("Application Support", isDirectory: true)
+      .appendingPathComponent("OSToolbar", isDirectory: true)
+      .appendingPathComponent("Notes", isDirectory: true)
+  }
+
+  /// The old default (~/Documents/OSToolbarNotes) — retained for one-time migration.
+  private static var legacyDefaultRoot: URL {
     realHome
       .appendingPathComponent("Documents", isDirectory: true)
       .appendingPathComponent("OSToolbarNotes", isDirectory: true)
@@ -28,6 +39,28 @@ enum NotesStore {
       return url
     }
     return defaultRoot
+  }
+
+  /// One-shot migration: if the legacy `~/Documents/OSToolbarNotes` folder has
+  /// content and the new Library path doesn't, move everything over. Runs at
+  /// startup; idempotent — subsequent launches see the new path populated and
+  /// skip. Users who picked a custom folder via `chooseDirectory()` are untouched.
+  static func migrateLegacyRootIfNeeded() {
+    // Only migrate the DEFAULT path. If a custom bookmark is set, respect it.
+    guard Defaults[.notesDirectoryBookmark] == nil else { return }
+    let legacy = legacyDefaultRoot
+    let fresh = defaultRoot
+    let fm = FileManager.default
+    let legacyContents = (try? fm.contentsOfDirectory(atPath: legacy.path)) ?? []
+    guard !legacyContents.isEmpty else { return }
+    let freshContents = (try? fm.contentsOfDirectory(atPath: fresh.path)) ?? []
+    guard freshContents.isEmpty else { return }
+    try? fm.createDirectory(at: fresh, withIntermediateDirectories: true)
+    for name in legacyContents where !name.hasPrefix(".") {
+      let src = legacy.appendingPathComponent(name)
+      let dst = fresh.appendingPathComponent(name)
+      try? fm.moveItem(at: src, to: dst)
+    }
   }
 
   static var rootDisplayPath: String { root.path(percentEncoded: false) }

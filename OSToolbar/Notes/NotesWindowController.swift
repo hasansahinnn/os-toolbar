@@ -20,14 +20,20 @@ final class NotesWindowController: NSWindowController, NSWindowDelegate {
     window.delegate = self
   }
 
-  /// Brings the Notes window to the front and switches the app to regular mode.
+  /// Brings the Notes window forward. Window is shown FIRST so the user sees
+  /// it immediately; the activation-policy switch (slow syscall, especially on
+  /// cold-idle wake-up) is deferred so it doesn't block the open by 10+ seconds.
   func show() {
-    // The app normally runs as a menu-bar accessory (no Dock icon, not in
-    // Cmd-Tab). While the Notes window is open we switch to a regular app so the
-    // window stays reachable (Dock + Cmd-Tab) and doesn't vanish on focus loss.
-    NSApp.setActivationPolicy(.regular)
-    NSApp.activate(ignoringOtherApps: true)
-    window?.makeKeyAndOrderFront(nil)
+    // Close the clipboard popup — otherwise NSApp.activate would raise it
+    // alongside Notes.
+    AppState.shared.popup.close()
+    window?.orderFrontRegardless()
+    window?.makeKey()
+    // Defer the slow WindowServer round-trip until after the window paints.
+    DispatchQueue.main.async {
+      NSApp.setActivationPolicy(.regular)
+      NSApp.activate(ignoringOtherApps: true)
+    }
   }
 
   func windowWillClose(_ notification: Notification) {
