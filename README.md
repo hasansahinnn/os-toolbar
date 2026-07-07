@@ -68,16 +68,16 @@ Don't take our word for it — verify it yourself with free tools:
 
 The release DMG has been scanned by 70+ antivirus engines:
 
-**▶ [VirusTotal report for OSToolbar-v1.0.0.dmg](https://www.virustotal.com/gui/file/0fd40cce8d506978bc5a24f824da10117d458d17b0c77c7484185ea90c573f00)**
+**▶ [VirusTotal report for OSToolbar-v1.0.0.dmg](https://www.virustotal.com/gui/file/42945c65c2afbc3c4d58246bbc9032c5b0d1979a9531ddacf0818d4fe21e4fe2?nocache=1)**
 
-`SHA-256 (DMG): 0fd40cce8d506978bc5a24f824da10117d458d17b0c77c7484185ea90c573f00`
-`SHA-256 (ZIP): 10d86edb8fff398868f3d77bee95e9fe74f669ebf26258167ffa37581a96fa0a`
+`SHA-256 (DMG): 42945c65c2afbc3c4d58246bbc9032c5b0d1979a9531ddacf0818d4fe21e4fe2`
+`SHA-256 (ZIP): 8c47cc0f24009516d44ae9a1fb2c788ea0da4595f64044ced32dcc7bdc9578c7`
 
 Verify the file you downloaded:
 
 ```bash
 shasum -a 256 OSToolbar-v1.0.0.dmg
-# expected: 0fd40cce8d506978bc5a24f824da10117d458d17b0c77c7484185ea90c573f00
+# expected: 42945c65c2afbc3c4d58246bbc9032c5b0d1979a9531ddacf0818d4fe21e4fe2
 ```
 
 If the hash matches, you have exactly the file we built. You can also
