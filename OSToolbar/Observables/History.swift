@@ -464,6 +464,27 @@ class History: ItemsContainer { // swiftlint:disable:this type_body_length
     pasteStack = nil
   }
 
+  /// Re-copying an existing entry bumps it back to the top instead of adding a
+  /// duplicate row: bump its copy count and last-copied date, then re-sort.
+  /// Keeps the existing decorator (and its already-loaded thumbnail) alive.
+  @MainActor
+  func bumpToTop(_ item: HistoryItem) {
+    guard let decorator = all.first(where: { $0.item === item }) else { return }
+
+    item.lastCopiedAt = .now
+    item.numberOfCopies += 1
+
+    let sortedItems = sorter.sort(all.map(\.item))
+    if let currentIndex = all.firstIndex(of: decorator),
+       let newIndex = sortedItems.firstIndex(of: item) {
+      all.remove(at: currentIndex)
+      all.insert(decorator, at: newIndex)
+    }
+    items = all
+    updateUnpinnedShortcuts()
+    Task { AppState.shared.popup.needsResize = true }
+  }
+
   /// Flips the item's pinned state and re-positions it in the sorted list.
   @MainActor
   func togglePin(_ item: HistoryItemDecorator?) {

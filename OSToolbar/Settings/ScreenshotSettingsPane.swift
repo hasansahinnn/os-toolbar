@@ -9,6 +9,8 @@ struct ScreenshotSettingsPane: View {
   @Default(.screenshotColorHex) private var colorHex
   @Default(.screenshotLineWidth) private var lineWidth
   @Default(.screenshotFontSize) private var fontSize
+  @Default(.screenshotFormat) private var formatRaw
+  @Default(.screenshotQuality) private var quality
 
   @State private var saveDirectory = ScreenshotPreferences.saveDirectoryDisplayPath
 
@@ -55,6 +57,35 @@ struct ScreenshotSettingsPane: View {
         } label: {
           Label("Take Screenshot", systemImage: "camera.viewfinder")
         }
+      }
+
+      Settings.Section(label: { Text("Format") }) {
+        Picker("", selection: $formatRaw) {
+          ForEach(ScreenshotFormat.allCases) { format in
+            Text(format.displayName).tag(format.rawValue)
+          }
+        }
+        .labelsHidden()
+        .frame(width: 320, alignment: .leading)
+      }
+
+      Settings.Section(label: { Text("Quality") }) {
+        HStack {
+          Slider(value: $quality, in: 0.5...1.0)
+            .frame(width: 200)
+            .disabled(formatRaw == "png")
+          Text("\(Int(quality * 100))%")
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+        }
+        .help("JPEG only — PNG is always lossless.")
+      }
+
+      Settings.Section(bottomDivider: true, label: { Text("Resolution") }) {
+        Defaults.Toggle(key: .screenshotRetina) {
+          Text("Save at full Retina (2×)")
+        }
+        .help("Off = 1× output: a quarter of the pixels and roughly a quarter of the file size, still sharp on screen.")
       }
 
       Settings.Section(bottomDivider: true, label: { Text("Save folder") }) {

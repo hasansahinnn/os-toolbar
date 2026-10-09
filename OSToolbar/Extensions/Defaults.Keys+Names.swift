@@ -51,6 +51,15 @@ extension Defaults.Keys {
   static let screenshotLineWidth = Key<Double>("screenshotLineWidth", default: 4)
   static let screenshotFontSize = Key<Double>("screenshotFontSize", default: 18)
   static let screenshotOpenFolderAfterCapture = Key<Bool>("screenshotOpenFolderAfterCapture", default: false)
+  /// Screenshot output format. Raw values: "jpeg" (default, small + universally
+  /// accepted on upload) or "png" (lossless, much larger).
+  static let screenshotFormat = Key<String>("screenshotFormat", default: "jpeg")
+  /// 0.0-1.0 quality for JPEG. PNG ignores this.
+  static let screenshotQuality = Key<Double>("screenshotQuality", default: 0.85)
+  /// Save at full Retina (2×) resolution. Off by default — 1× output is 4×
+  /// fewer pixels and still perfectly legible, which is the single biggest
+  /// factor in screenshot file size.
+  static let screenshotRetina = Key<Bool>("screenshotRetina", default: false)
 
   // Notes module
   static let notesDirectoryBookmark = Key<Data?>("notesDirectoryBookmark", default: nil)

@@ -89,10 +89,13 @@ class Popup {
   /// Closes the panel and releases every decorator's decoded NSImages.
   func close() {
     AppState.shared.appDelegate?.panel.close()  // close() calls reset
-    // Release decoded NSImages so RAM doesn't grow with every popup session.
+    // Release only the big preview bitmaps (600×400 each). Row thumbnails are
+    // tiny and must survive: SwiftUI keeps the popup's view tree alive between
+    // open/close, so `.onAppear` doesn't fire again on reopen and anything
+    // cleared here would never be regenerated — the rows just render blank.
     Task { @MainActor in
       for decorator in History.shared.all {
-        decorator.cleanupImages()
+        decorator.releasePreviewImage()
       }
     }
   }

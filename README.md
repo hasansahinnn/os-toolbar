@@ -68,16 +68,16 @@ Don't take our word for it — verify it yourself with free tools:
 
 The release DMG has been scanned by 70+ antivirus engines:
 
-**▶ [VirusTotal report for OSToolbar-v1.0.0.dmg](https://www.virustotal.com/gui/file/42945c65c2afbc3c4d58246bbc9032c5b0d1979a9531ddacf0818d4fe21e4fe2?nocache=1)**
+**▶ [VirusTotal report for OSToolbar-v2.0.0.dmg](https://www.virustotal.com/gui/file/23d6138f04817c6020b62a69f555399da498de5c05001f91a35fd220f02dce90?nocache=1)**
 
-`SHA-256 (DMG): 42945c65c2afbc3c4d58246bbc9032c5b0d1979a9531ddacf0818d4fe21e4fe2`
-`SHA-256 (ZIP): 8c47cc0f24009516d44ae9a1fb2c788ea0da4595f64044ced32dcc7bdc9578c7`
+`SHA-256 (DMG): 23d6138f04817c6020b62a69f555399da498de5c05001f91a35fd220f02dce90`
+`SHA-256 (ZIP): feba9366a7bed65ca20aaa4aa71547ec8ed0b41abde1bffd2917524776f87451`
 
 Verify the file you downloaded:
 
 ```bash
-shasum -a 256 OSToolbar-v1.0.0.dmg
-# expected: 42945c65c2afbc3c4d58246bbc9032c5b0d1979a9531ddacf0818d4fe21e4fe2
+shasum -a 256 OSToolbar-v2.0.0.dmg
+# expected: 23d6138f04817c6020b62a69f555399da498de5c05001f91a35fd220f02dce90
 ```
 
 If the hash matches, you have exactly the file we built. You can also

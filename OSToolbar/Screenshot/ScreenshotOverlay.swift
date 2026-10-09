@@ -112,6 +112,19 @@ final class ScreenshotOverlayWindow: NSWindow {
     makeFirstResponder(canvas)
   }
 
+  // ⌘C is intercepted at the window, ahead of the main menu. Once the Notes
+  // window has been opened the app runs as `.regular` and gains a standard
+  // main menu whose Edit ▸ Copy would otherwise swallow the shortcut before
+  // the overlay ever sees it.
+  override func performKeyEquivalent(with event: NSEvent) -> Bool {
+    if event.modifierFlags.contains(.command),
+       event.charactersIgnoringModifiers?.lowercased() == "c" {
+      canvas.copyToClipboard()
+      return true
+    }
+    return super.performKeyEquivalent(with: event)
+  }
+
   override var canBecomeKey: Bool { true }
   override var canBecomeMain: Bool { true }
 
@@ -574,6 +587,26 @@ final class ScreenshotCanvasView: NSView {
 
   // MARK: Keyboard
 
+  // ⌘-shortcuts must be handled here, not in keyDown. Once the Notes window
+  // has been opened the app switches to `.regular`, which gives it a standard
+  // main menu — and the menu's Edit ▸ Copy swallows ⌘C before keyDown ever
+  // runs. performKeyEquivalent fires ahead of the main menu, so the overlay
+  // keeps working in both activation policies.
+  override func performKeyEquivalent(with event: NSEvent) -> Bool {
+    guard event.modifierFlags.contains(.command) else { return false }
+    switch event.keyCode {
+    case 8: // cmd+c
+      commitActiveText()
+      copyToClipboard()
+      return true
+    case 6: // cmd+z
+      undo()
+      return true
+    default:
+      return super.performKeyEquivalent(with: event)
+    }
+  }
+
   override func keyDown(with event: NSEvent) {
     let command = event.modifierFlags.contains(.command)
     switch event.keyCode {
@@ -604,53 +637,76 @@ final class ScreenshotCanvasView: NSView {
 
   func copyToClipboard() {
     commitActiveText()
-    guard let png = exportPNG() else { return }
+    // Pasteboard always uses PNG for maximum compatibility with paste targets.
+    guard let png = exportImage(format: .png) else { return }
     let pasteboard = NSPasteboard.general
     pasteboard.clearContents()
-    if let image = NSImage(data: png) {
-      pasteboard.writeObjects([image])
-    }
+    // Declare both types up front. `setData` silently fails for a type that
+    // wasn't declared, and the old writeObjects-then-setData order left the
+    // pasteboard empty whenever NSImage(data:) came back nil — which is how
+    // ⌘C ended up doing nothing at all.
+    pasteboard.declareTypes([.png, .tiff], owner: nil)
     pasteboard.setData(png, forType: .png)
+    if let tiff = NSImage(data: png)?.tiffRepresentation {
+      pasteboard.setData(tiff, forType: .tiff)
+    }
     onClose?()
   }
 
   func saveToDefault() {
     commitActiveText()
-    guard let png = exportPNG() else { return }
-    ScreenshotPreferences.saveToDefaultDirectory(png)
+    let format = ScreenshotFormat.preferred
+    guard let data = exportImage(format: format) else { return }
+    ScreenshotPreferences.saveToDefaultDirectory(data, format: format)
     onClose?()
   }
 
   func saveAs() {
     commitActiveText()
-    guard let png = exportPNG() else { return }
+    let format = ScreenshotFormat.preferred
+    guard let data = exportImage(format: format) else { return }
     // Tear down the shield-level overlay FIRST, otherwise the save panel
     // opens behind it and can't be seen or interacted with.
     onClose?()
     DispatchQueue.main.async {
-      _ = ScreenshotPreferences.saveAs(png)
+      _ = ScreenshotPreferences.saveAs(data, format: format)
     }
   }
 
   // MARK: Export
 
-  private func exportPNG() -> Data? {
+  /// Renders the selected region + annotations, then encodes as JPEG or PNG
+  /// per `format`. JPEG is the default because a PNG of a Retina full-screen
+  /// shot easily hits 20-40 MB.
+  private func exportImage(format: ScreenshotFormat) -> Data? {
     guard let sel = selection, sel.width > 0, sel.height > 0 else { return nil }
 
-    let pixelSize = NSSize(width: round(sel.width * scale), height: round(sel.height * scale))
+    // Output scale drives file size more than anything else: a 2× Retina grab
+    // is 4× the pixels of a 1× one. Default is 1× — still legible, ~4× smaller.
+    let outputScale: CGFloat = Defaults[.screenshotRetina] ? scale : 1
+    let pixelSize = NSSize(
+      width: round(sel.width * outputScale),
+      height: round(sel.height * outputScale)
+    )
     let image = NSImage(size: pixelSize)
     image.lockFocusFlipped(true)
     if let context = NSGraphicsContext.current {
-      context.cgContext.scaleBy(x: scale, y: scale)
+      context.imageInterpolation = .high
+      context.cgContext.scaleBy(x: outputScale, y: outputScale)
       context.cgContext.translateBy(x: -sel.minX, y: -sel.minY)
       backgroundImage.draw(in: bounds)
       drawAnnotations(clipTo: sel)
     }
     image.unlockFocus()
 
-    guard let tiff = image.tiffRepresentation,
-          let rep = NSBitmapImageRep(data: tiff) else { return nil }
-    return rep.representation(using: .png, properties: [:])
+    // Fall back to the TIFF round-trip when cgImage(forProposedRect:) comes
+    // back nil — a silent nil here is what made ⌘C look like it did nothing.
+    let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+      ?? image.tiffRepresentation
+        .flatMap { NSBitmapImageRep(data: $0) }
+        .flatMap { $0.cgImage }
+    guard let cgImage else { return nil }
+    return format.encode(cgImage: cgImage, quality: Defaults[.screenshotQuality])
   }
 }
 

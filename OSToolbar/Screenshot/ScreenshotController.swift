@@ -1,7 +1,63 @@
 import AppKit
 import Defaults
+import ImageIO
 import ScreenCaptureKit
 import UniformTypeIdentifiers
+
+/// Output format for saved screenshots. JPEG is the default: it's the smallest
+/// format every upload target actually accepts. HEIC was tried and dropped —
+/// many sites and web apps reject or mangle `.heic` on upload.
+enum ScreenshotFormat: String, CaseIterable, Identifiable {
+  case jpeg
+  case png
+
+  var id: String { rawValue }
+
+  /// Reads the user's preferred format from Defaults, falling back to JPEG.
+  /// A stored "heic" from an earlier build no longer matches a case and so
+  /// lands on the JPEG fallback, which is the migration we want.
+  static var preferred: ScreenshotFormat {
+    ScreenshotFormat(rawValue: Defaults[.screenshotFormat]) ?? .jpeg
+  }
+
+  var fileExtension: String {
+    switch self {
+    case .jpeg: return "jpg"
+    case .png: return "png"
+    }
+  }
+
+  var contentType: UTType {
+    switch self {
+    case .jpeg: return .jpeg
+    case .png: return .png
+    }
+  }
+
+  var displayName: String {
+    switch self {
+    case .jpeg: return "JPEG (small, works everywhere)"
+    case .png: return "PNG (lossless, much larger)"
+    }
+  }
+
+  /// Encodes a CGImage via ImageIO with the format's UTI + optional quality.
+  /// PNG ignores quality; JPEG honours it (0.0-1.0).
+  func encode(cgImage: CGImage, quality: Double) -> Data? {
+    let out = NSMutableData()
+    guard let dest = CGImageDestinationCreateWithData(
+      out, contentType.identifier as CFString, 1, nil
+    ) else { return nil }
+    let props: CFDictionary
+    if self == .png {
+      props = [:] as CFDictionary
+    } else {
+      props = [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary
+    }
+    CGImageDestinationAddImage(dest, cgImage, props)
+    return CGImageDestinationFinalize(dest) ? (out as Data) : nil
+  }
+}
 
 enum ScreenshotError: Error {
   case displayNotFound
@@ -63,17 +119,18 @@ enum ScreenshotPreferences {
     NSWorkspace.shared.activateFileViewerSelecting([url])
   }
 
-  /// Writes PNG bytes to the configured screenshot folder. Returns the saved URL.
+  /// Writes image bytes to the configured screenshot folder using the given
+  /// format's file extension. Returns the saved URL.
   @discardableResult
-  static func saveToDefaultDirectory(_ pngData: Data) -> URL? {
+  static func saveToDefaultDirectory(_ data: Data, format: ScreenshotFormat = .preferred) -> URL? {
     let dir = saveDirectory
     let scoped = startScopedAccess(for: dir)
     defer { if scoped { dir.stopAccessingSecurityScopedResource() } }
 
     ensureExists(dir)
-    let url = dir.appendingPathComponent(fileName())
+    let url = dir.appendingPathComponent(fileName(ext: format.fileExtension))
     do {
-      try pngData.write(to: url)
+      try data.write(to: url)
       return url
     } catch {
       NSLog("OSToolbar: failed to save screenshot: \(error)")
@@ -81,19 +138,32 @@ enum ScreenshotPreferences {
     }
   }
 
-  /// Shows an NSSavePanel ("Save As…") and writes PNG bytes to the chosen URL.
+  /// Last folder picked in a Save As panel, remembered for this app session
+  /// only (deliberately not persisted). Plain "Save" ignores this and always
+  /// uses the folder configured in Preferences.
+  private static var lastSaveAsDirectory: URL?
+
+  /// Shows an NSSavePanel ("Save As…") and writes image bytes to the chosen URL.
   @discardableResult
-  static func saveAs(_ pngData: Data) -> URL? {
+  static func saveAs(_ data: Data, format: ScreenshotFormat = .preferred) -> URL? {
     // Menu-bar app must be active so the Save panel comes to the front.
     NSApp.activate(ignoringOtherApps: true)
     let panel = NSSavePanel()
     panel.level = .modalPanel
-    panel.allowedContentTypes = [.png]
-    panel.nameFieldStringValue = fileName()
-    panel.directoryURL = saveDirectory
+    panel.allowedContentTypes = [format.contentType]
+    panel.nameFieldStringValue = fileName(ext: format.fileExtension)
+    // Reopen where the user last saved, falling back to the configured folder
+    // when that's the first Save As or the folder has since gone away
+    // (ejected volume, deleted directory).
+    panel.directoryURL = lastSaveAsDirectory.flatMap { dir in
+      var isDir: ObjCBool = false
+      let exists = FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir)
+      return exists && isDir.boolValue ? dir : nil
+    } ?? saveDirectory
     guard panel.runModal() == .OK, let url = panel.url else { return nil }
     do {
-      try pngData.write(to: url)
+      try data.write(to: url)
+      lastSaveAsDirectory = url.deletingLastPathComponent()
       return url
     } catch {
       NSLog("OSToolbar: failed to save screenshot: \(error)")
@@ -101,10 +171,10 @@ enum ScreenshotPreferences {
     }
   }
 
-  static func fileName() -> String {
+  static func fileName(ext: String = "png") -> String {
     let formatter = DateFormatter()
     formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
-    return "Screenshot \(formatter.string(from: Date())).png"
+    return "Screenshot \(formatter.string(from: Date())).\(ext)"
   }
 
   private static func ensureExists(_ dir: URL) {
@@ -197,9 +267,13 @@ final class ScreenshotController {
       do {
         let image = try await Self.captureDisplay(displayID: displayID, scale: scale)
         let boxed = SendableCGImageBox(image: image)
+        let format = ScreenshotFormat.preferred
+        let quality = Defaults[.screenshotQuality]
+        let outputDivisor: CGFloat = Defaults[.screenshotRetina] ? 1 : scale
         Task.detached(priority: .userInitiated) {
-          guard let png = Self.pngData(from: boxed.image) else { return }
-          let savedURL = ScreenshotPreferences.saveToDefaultDirectory(png)
+          let sized = Self.downscale(boxed.image, by: outputDivisor) ?? boxed.image
+          guard let data = format.encode(cgImage: sized, quality: quality) else { return }
+          let savedURL = ScreenshotPreferences.saveToDefaultDirectory(data, format: format)
           let nsImage = NSImage(
             cgImage: boxed.image,
             size: NSSize(width: boxed.image.width, height: boxed.image.height)
@@ -228,10 +302,25 @@ final class ScreenshotController {
     window.present()
   }
 
-  // nonisolated for the background PNG-encoding task.
-  nonisolated private static func pngData(from cgImage: CGImage) -> Data? {
-    let rep = NSBitmapImageRep(cgImage: cgImage)
-    return rep.representation(using: .png, properties: [:])
+  /// Downsamples a CGImage by `divisor` (2 on Retina → half the width/height,
+  /// a quarter of the pixels). Returns the original when divisor is ~1.
+  nonisolated private static func downscale(_ cgImage: CGImage, by divisor: CGFloat) -> CGImage? {
+    guard divisor > 1.01 else { return cgImage }
+    let width = Int((CGFloat(cgImage.width) / divisor).rounded())
+    let height = Int((CGFloat(cgImage.height) / divisor).rounded())
+    guard width > 0, height > 0,
+          let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: cgImage.colorSpace ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+          ) else { return nil }
+    context.interpolationQuality = .high
+    context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+    return context.makeImage()
   }
 
   private func presentOverlay(cgImage: CGImage, screen: NSScreen, scale: CGFloat) {

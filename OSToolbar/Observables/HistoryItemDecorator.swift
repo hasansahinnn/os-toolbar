@@ -97,7 +97,10 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
         guard let cgImage = Self.downsample(data, maxPixelSize: maxPixel) else { return }
         let boxed = SendableCGImage(image: cgImage)
         await MainActor.run {
-          self?.thumbnailImage = NSImage(cgImage: boxed.image, size: Self.fittedSize(boxed.image, within: target))
+          self?.thumbnailImage = NSImage(
+            cgImage: boxed.image,
+            size: Self.fittedSize(boxed.image, within: target)
+          )
         }
       }
       return
@@ -154,6 +157,39 @@ class HistoryItemDecorator: Identifiable, Hashable, HasVisibility {
     ensurePreviewImage()
     _ = await previewImageGenerationTask?.value
     return previewImage
+  }
+
+  /// Installs an already-encoded thumbnail JPEG, overriding whatever load is
+  /// in flight. Called right after the clipboard pipeline attaches a freshly
+  /// generated thumbnail: by then the row's own `.onAppear` has usually
+  /// already claimed `thumbnailImageGenerationTask` with the slow backfill
+  /// path, and a plain `ensureThumbnailImage()` nudge would be rejected by
+  /// its guard — leaving the row permanently blank.
+  @MainActor
+  func applyThumbnail(jpegData: Data) {
+    thumbnailImageGenerationTask?.cancel()
+    let target = Self.thumbnailImageSize
+    let maxPixel = max(target.width, target.height) * 2
+    thumbnailImageGenerationTask = Task.detached(priority: .userInitiated) { [weak self] in
+      guard let cgImage = Self.downsample(jpegData, maxPixelSize: maxPixel) else { return }
+      let boxed = SendableCGImage(image: cgImage)
+      await MainActor.run {
+        self?.thumbnailImage = NSImage(
+          cgImage: boxed.image,
+          size: Self.fittedSize(boxed.image, within: target)
+        )
+      }
+    }
+  }
+
+  /// Drops just the preview-pane bitmap (the expensive one). Called when the
+  /// popup closes; row thumbnails are deliberately left alone.
+  @MainActor
+  func releasePreviewImage() {
+    previewImageGenerationTask?.cancel()
+    previewImageGenerationTask = nil
+    previewImage?.recache()
+    previewImage = nil
   }
 
   // Called on .onDisappear — bounds thumbnail RAM to visible rows.

@@ -16,6 +16,11 @@ class Clipboard {
   /// Last seen `NSPasteboard.changeCount` — used to detect new copies cheaply.
   var changeCount: Int
 
+  /// Set by `copy(_ item:)` when the user re-copies an existing history entry.
+  /// Consumed by the next polling tick so it bumps that entry to the top
+  /// instead of recording an identical second row.
+  private var reCopiedHistoryItem: HistoryItem?
+
   private let pasteboard = NSPasteboard.general
 
   private var timer: Timer?
@@ -87,6 +92,10 @@ class Clipboard {
   func copy(_ item: HistoryItem?, removeFormatting: Bool = false) {
     guard let item else { return }
 
+    // Remember which history entry we're putting on the pasteboard. The
+    // polling tick that follows will see it as "new" content and would
+    // otherwise append a duplicate row; instead we bump the original.
+    reCopiedHistoryItem = item
     pasteboard.clearContents()
     var contents = item.contents
 
@@ -156,7 +165,11 @@ class Clipboard {
         thumb.item = historyItem
         historyItem.contents.append(thumb)
         // Decorator's first .onAppear ran before attach completed; nudge it.
-        History.shared.all.first(where: { $0.item === historyItem })?.ensureThumbnailImage()
+        // Hand the bytes straight to the decorator. A plain
+        // ensureThumbnailImage() nudge loses to the row's own in-flight
+        // backfill task and the row would stay blank forever.
+        History.shared.all.first(where: { $0.item === historyItem })?
+          .applyThumbnail(jpegData: jpeg)
       }
     }
   }
@@ -187,7 +200,8 @@ class Clipboard {
         )
         thumb.item = historyItem
         historyItem.contents.append(thumb)
-        History.shared.all.first(where: { $0.item === historyItem })?.ensureThumbnailImage()
+        History.shared.all.first(where: { $0.item === historyItem })?
+          .applyThumbnail(jpegData: jpeg)
       }
     }
   }
@@ -233,11 +247,25 @@ class Clipboard {
 
     changeCount = pasteboard.changeCount
 
-    if pasteboard.pasteboardItems?.contains(where: { $0.types.contains(.fromOSToolbar) }) != true {
+    let isOurOwnCopy = pasteboard.pasteboardItems?
+      .contains(where: { $0.types.contains(.fromOSToolbar) }) == true
+
+    if !isOurOwnCopy {
       // External copy occurred. Stop the current paste stack.
       // Maybe queue it into the paste stack? Configurable behaviour?
       AppState.shared.history.interruptPasteStack()
     }
+
+    // Re-copying an existing entry: move it back to the top rather than
+    // appending an identical row. Without this every click on a history item
+    // spawned a fresh duplicate whose thumbnail hadn't been generated yet,
+    // which read as "the images disappeared".
+    if isOurOwnCopy, let reCopied = reCopiedHistoryItem {
+      reCopiedHistoryItem = nil
+      AppState.shared.history.bumpToTop(reCopied)
+      return
+    }
+    reCopiedHistoryItem = nil
 
     if Defaults[.ignoreEvents] {
       if Defaults[.ignoreOnlyNextEvent] {
